@@ -1,3 +1,4 @@
+#!/usr/bin/env node
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
@@ -8,7 +9,7 @@ import { EngineManager } from './engine.js';
 // ---------------------------------------------------------------------------
 
 const server = new McpServer({
-  name: 'kibitz',
+  name: 'syndic-mcp',
   version: '0.1.0',
 });
 
@@ -19,7 +20,7 @@ const manager = new EngineManager();
 // ---------------------------------------------------------------------------
 
 server.tool(
-  'kibitz_run',
+  'syndic_run',
   [
     'Spawn an external AI CLI engine to execute a task with full capabilities.',
     'The engine runs in its own process and signals completion by writing a sentinel file.',
@@ -63,6 +64,7 @@ server.tool(
                   status: task.status,
                   engine: task.engine,
                   duration_ms: (task.completedAt ?? Date.now()) - task.startedAt,
+                  output_content: task.outputContent,
                   result: (task.sentinelContent || task.stdout || 'No output captured').substring(
                     0,
                     50_000,
@@ -86,7 +88,7 @@ server.tool(
                 task_id: task.id,
                 status: 'running',
                 engine: task.engine,
-                message: 'Task spawned. Use kibitz_status to check progress.',
+                message: 'Task spawned. Use syndic_status to check progress.',
               },
               null,
               2,
@@ -109,10 +111,10 @@ server.tool(
 );
 
 server.tool(
-  'kibitz_status',
-  'Check the status of a kibitz task. Returns result content if the task has completed.',
+  'syndic_status',
+  'Check the status of a syndic task. Returns result content if the task has completed.',
   {
-    task_id: z.string().describe('Task ID returned by kibitz_run'),
+    task_id: z.string().describe('Task ID returned by syndic_run'),
   },
   async ({ task_id }) => {
     const task = manager.getTask(task_id);
@@ -131,6 +133,7 @@ server.tool(
     };
 
     if (task.status !== 'running') {
+      info.output_content = task.outputContent;
       info.result = (task.sentinelContent || task.stdout || 'No output').substring(0, 50_000);
       info.error = task.error;
     } else {
@@ -146,8 +149,8 @@ server.tool(
 );
 
 server.tool(
-  'kibitz_cancel',
-  'Cancel a running kibitz task. Kills the engine process immediately.',
+  'syndic_cancel',
+  'Cancel a running syndic task. Kills the engine process immediately.',
   {
     task_id: z.string().describe('Task ID to cancel'),
   },
@@ -176,7 +179,7 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
-  process.stderr.write(`Kibitz failed to start: ${err}\n`);
+  process.stderr.write(`syndic-mcp failed to start: ${err}\n`);
   process.exit(1);
 });
 

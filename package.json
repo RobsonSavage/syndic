@@ -1,13 +1,35 @@
 {
-  "name": "kibitz",
-  "version": "0.1.0",
+  "name": "syndic-mcp",
+  "version": "0.1.2",
   "description": "MCP server for orchestrating external AI CLI engines with sentinel-file completion detection",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "syndic-mcp": "dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "prepublishOnly": "tsc"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai",
+    "cli",
+    "orchestration",
+    "codex",
+    "gemini",
+    "claude"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dave/syndic-mcp.git"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
