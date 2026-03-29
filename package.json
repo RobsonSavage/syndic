@@ -29,7 +29,7 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/dave/syndic-mcp.git"
+    "url": "git+https://github.com/RobsonSavage/syndic.git"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.12.0",
