@@ -77,6 +77,7 @@ Spawn an external AI CLI engine to execute a task.
 | `cwd` | `string` | No | Absolute working directory path. Defaults to the server's cwd. |
 | `timeout_ms` | `number` | No | Timeout in ms. Range: 10,000–3,600,000. Default: 300,000 (5 min). |
 | `wait` | `boolean` | No | If `true`, block until the task completes or times out. Default: `false` (returns `task_id` immediately). |
+| `yolo` | `boolean` | No | If `true`, run engine without guardrails. Default: `false` (safe mode). See [Safe mode vs YOLO mode](#safe-mode-vs-yolo-mode). |
 
 **Async response** (`wait: false`):
 ```json
@@ -124,6 +125,18 @@ Kill a running task immediately.
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `task_id` | `string` | Yes | ID of the task to cancel |
+
+## Safe mode vs YOLO mode
+
+Each engine supports two permission levels, selected by the `yolo` parameter:
+
+| Engine | Safe (`yolo: false`, default) | YOLO (`yolo: true`) |
+|--------|-------------------------------|---------------------|
+| Codex | `exec --full-auto` (workspace-write sandbox, on-request approvals) | `exec --dangerously-bypass-approvals-and-sandbox` (no sandbox, no approvals) |
+| Gemini | `--approval-mode=auto_edit` (auto-approves file writes only) | `--yolo` (auto-approves all tools including shell commands) |
+| Claude | `--dangerously-skip-permissions` | `--dangerously-skip-permissions` (same — no safer option exists) |
+
+Safe mode is sufficient for read-only analysis tasks. Use YOLO mode when the engine needs unrestricted shell access or you're running in an externally sandboxed environment.
 
 ## Completion protocol
 

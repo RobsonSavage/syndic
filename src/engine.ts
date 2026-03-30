@@ -102,6 +102,7 @@ export class EngineManager {
     cwd?: string,
     timeoutMs?: number,
     wait?: boolean,
+    yolo?: boolean,
   ): Promise<Task> {
     if (prompt.length > MAX_PROMPT_CHARS) {
       throw new Error(
@@ -162,8 +163,9 @@ export class EngineManager {
 
     // --- spawn via cmd.exe /c  to handle .cmd shims on Windows ---
     const config = ENGINE_CONFIGS[engine];
+    const modeArgs = yolo ? config.yoloArgs : config.safeArgs;
     const promptArgs = config.promptFlag ? [config.promptFlag, bootPrompt] : [bootPrompt];
-    const spawnArgs = ['/c', config.command, ...config.promptModeArgs, ...promptArgs];
+    const spawnArgs = ['/c', config.command, ...modeArgs, ...promptArgs];
 
     const proc = spawn('cmd.exe', spawnArgs, {
       cwd: workDir,

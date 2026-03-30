@@ -48,10 +48,17 @@ server.tool(
       .boolean()
       .optional()
       .describe('If true, block until the task completes or times out. Default: false.'),
+    yolo: z
+      .boolean()
+      .optional()
+      .describe(
+        'If true, run with no guardrails: Gemini uses --yolo, Codex uses --dangerously-bypass-approvals-and-sandbox. ' +
+        'Default: false (safe mode — auto_edit / full-auto).',
+      ),
   },
-  async ({ engine, prompt, cwd, timeout_ms, wait }) => {
+  async ({ engine, prompt, cwd, timeout_ms, wait, yolo }) => {
     try {
-      const task = await manager.run(engine, prompt, cwd, timeout_ms, wait);
+      const task = await manager.run(engine, prompt, cwd, timeout_ms, wait, yolo);
 
       if (wait && task.status !== 'running') {
         return {

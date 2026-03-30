@@ -10,8 +10,10 @@ export type TaskStatus =
 
 export interface EngineConfig {
   command: string;
-  /** Args placed before the prompt (e.g. subcommand, flags) */
-  promptModeArgs: string[];
+  /** Args placed before the prompt in safe mode (e.g. subcommand, flags) */
+  safeArgs: string[];
+  /** Args placed before the prompt in YOLO mode (no guardrails) */
+  yoloArgs: string[];
   /** Flag preceding the prompt string (e.g. '-p'). Empty string = positional (no flag). */
   promptFlag: string;
 }
@@ -34,23 +36,24 @@ export interface Task {
 
 export const ENGINE_CONFIGS: Record<EngineType, EngineConfig> = {
   // `codex exec` is the proper headless subcommand (no TTY, no Ink TUI).
-  // --full-auto required for write access; default sandbox is read-only.
   // Prompt is positional — codex exec has no -p flag.
   codex: {
     command: 'codex',
-    promptModeArgs: ['exec', '--full-auto'],
+    safeArgs: ['exec', '--full-auto'],
+    yoloArgs: ['exec', '--dangerously-bypass-approvals-and-sandbox'],
     promptFlag: '',
   },
-  // -p triggers headless mode. --approval-mode=auto_edit auto-approves file
-  // writes; without it gemini hangs waiting for y/n in non-interactive mode.
+  // -p triggers headless mode.
   gemini: {
     command: 'gemini',
-    promptModeArgs: ['--approval-mode=auto_edit'],
+    safeArgs: ['--approval-mode=auto_edit'],
+    yoloArgs: ['--yolo'],
     promptFlag: '-p',
   },
   claude: {
     command: 'claude',
-    promptModeArgs: ['--dangerously-skip-permissions'],
+    safeArgs: ['--dangerously-skip-permissions'],
+    yoloArgs: ['--dangerously-skip-permissions'],
     promptFlag: '-p',
   },
 };
