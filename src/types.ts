@@ -39,7 +39,7 @@ export const ENGINE_CONFIGS: Record<EngineType, EngineConfig> = {
   // Prompt is positional — codex exec has no -p flag.
   codex: {
     command: 'codex',
-    safeArgs: ['exec', '--full-auto'],
+    safeArgs: ['exec', '--full-auto', '-c', 'sandbox_permissions=["disk-full-read-access"]'],
     yoloArgs: ['exec', '--dangerously-bypass-approvals-and-sandbox'],
     promptFlag: '',
   },
