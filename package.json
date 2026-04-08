@@ -1,6 +1,6 @@
 {
   "name": "syndic-mcp",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "MCP server for orchestrating external AI CLI engines with sentinel-file completion detection",
   "type": "module",
   "main": "dist/index.js",
