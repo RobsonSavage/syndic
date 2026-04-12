@@ -103,6 +103,7 @@ export class EngineManager {
     timeoutMs?: number,
     wait?: boolean,
     yolo?: boolean,
+    model?: string,
   ): Promise<Task> {
     if (prompt.length > MAX_PROMPT_CHARS) {
       throw new Error(
@@ -165,7 +166,8 @@ export class EngineManager {
     const config = ENGINE_CONFIGS[engine];
     const modeArgs = yolo ? config.yoloArgs : config.safeArgs;
     const promptArgs = config.promptFlag ? [config.promptFlag, bootPrompt] : [bootPrompt];
-    const spawnArgs = ['/c', config.command, ...modeArgs, ...promptArgs];
+    const modelArgs = engine === 'gemini' ? ['--model', model ?? 'auto-gemini-3'] : [];
+    const spawnArgs = ['/c', config.command, ...modelArgs, ...modeArgs, ...promptArgs];
 
     const proc = spawn('cmd.exe', spawnArgs, {
       cwd: workDir,

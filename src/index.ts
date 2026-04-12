@@ -55,10 +55,16 @@ server.tool(
         'If true, run with no guardrails: Gemini uses --yolo, Codex uses --dangerously-bypass-approvals-and-sandbox. ' +
         'Default: false (safe mode — auto_edit / full-auto).',
       ),
+    model: z
+      .string()
+      .optional()
+      .describe(
+        'Model to use when engine=gemini. Defaults to "auto-gemini-3". Has no effect for other engines.',
+      ),
   },
-  async ({ engine, prompt, cwd, timeout_ms, wait, yolo }) => {
+  async ({ engine, prompt, cwd, timeout_ms, wait, yolo, model }) => {
     try {
-      const task = await manager.run(engine, prompt, cwd, timeout_ms, wait, yolo);
+      const task = await manager.run(engine, prompt, cwd, timeout_ms, wait, yolo, model);
 
       if (wait && task.status !== 'running') {
         return {
