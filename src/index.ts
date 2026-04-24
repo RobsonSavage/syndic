@@ -28,7 +28,7 @@ server.tool(
   ].join(' '),
   {
     engine: z
-      .enum(['codex', 'gemini', 'claude'])
+      .enum(['codex', 'gemini', 'claude', 'opencode'])
       .describe('Which CLI engine to invoke'),
     prompt: z
       .string()
@@ -53,6 +53,7 @@ server.tool(
       .optional()
       .describe(
         'If true, run with no guardrails: Gemini uses --yolo, Codex uses --dangerously-bypass-approvals-and-sandbox. ' +
+        'Opencode has no safe/yolo distinction at the CLI level (permissions are enforced via ~/.config/opencode/config.json). ' +
         'Default: false (safe mode — auto_edit / full-auto).',
       ),
     model: z

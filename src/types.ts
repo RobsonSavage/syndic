@@ -1,4 +1,4 @@
-export type EngineType = 'codex' | 'gemini' | 'claude';
+export type EngineType = 'codex' | 'gemini' | 'claude' | 'opencode';
 
 export type TaskStatus =
   | 'pending'
@@ -55,6 +55,20 @@ export const ENGINE_CONFIGS: Record<EngineType, EngineConfig> = {
     safeArgs: ['--dangerously-skip-permissions'],
     yoloArgs: ['--dangerously-skip-permissions'],
     promptFlag: '-p',
+  },
+  // `opencode run` is the headless subcommand. Positional prompt.
+  // Permissions are centrally managed in ~/.config/opencode/config.json; the
+  // `--dangerously-skip-permissions` flag lets the headless run honour those
+  // config-level allow/deny rules without hitting interactive approval prompts
+  // (opencode has no intermediate "auto-edit" mode between full-interactive
+  // and skip-permissions). Safe and yolo are therefore identical at the CLI
+  // level — the tighter safe policy is enforced by the config file, not the
+  // spawn args.
+  opencode: {
+    command: 'opencode',
+    safeArgs: ['run', '--dangerously-skip-permissions'],
+    yoloArgs: ['run', '--dangerously-skip-permissions'],
+    promptFlag: '',
   },
 };
 

@@ -164,7 +164,14 @@ export class EngineManager {
 
     // --- spawn via cmd.exe /c  to handle .cmd shims on Windows ---
     const config = ENGINE_CONFIGS[engine];
-    const modeArgs = yolo ? config.yoloArgs : config.safeArgs;
+    const baseModeArgs = yolo ? config.yoloArgs : config.safeArgs;
+    // Opencode ignores the inherited OS cwd on Windows and needs --dir set
+    // explicitly; otherwise write tools resolve to the wrong directory and
+    // the sentinel/output files never appear. --dir is a `run` subcommand
+    // flag, so it must be injected after 'run' — we splice it directly into
+    // modeArgs for opencode.
+    const modeArgs =
+      engine === 'opencode' ? [...baseModeArgs, '--dir', workDir] : baseModeArgs;
     const promptArgs = config.promptFlag ? [config.promptFlag, bootPrompt] : [bootPrompt];
     const modelArgs = engine === 'gemini' ? ['--model', model ?? 'auto-gemini-3'] : [];
     const spawnArgs = ['/c', config.command, ...modelArgs, ...modeArgs, ...promptArgs];
