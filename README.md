@@ -1,6 +1,6 @@
 # syndic-mcp
 
-An MCP server that lets any MCP-capable AI host (Claude Code, Cursor, Cline, etc.) spawn and orchestrate external AI CLI engines — **Codex**, **Gemini CLI**, and **Claude Code** — as subagents for parallel or delegated task execution.
+An MCP server that lets any MCP-capable AI host (Claude Code, Cursor, Cline, etc.) spawn and orchestrate external AI CLI engines — **Codex**, **Gemini CLI**, **Claude Code**, and **OpenCode** — as subagents for parallel or delegated task execution.
 
 Tasks run in their own processes. Completion is detected via a sentinel file written by the engine, so the orchestrator never polls or blocks unnecessarily.
 
@@ -22,6 +22,7 @@ Install the CLI engines you intend to use:
 | Codex CLI | `npm install -g @openai/codex` |
 | Gemini CLI | `npm install -g @google/gemini-cli` |
 | Claude Code | `npm install -g @anthropic-ai/claude-code` |
+| OpenCode | `npm install -g @anthropic-ai/opencode` |
 
 Node.js >= 18 required.
 
@@ -72,7 +73,7 @@ Spawn an external AI CLI engine to execute a task.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
-| `engine` | `"codex" \| "gemini" \| "claude"` | Yes | Which CLI engine to invoke |
+| `engine` | `"codex" \| "gemini" \| "claude" \| "opencode"` | Yes | Which CLI engine to invoke |
 | `prompt` | `string` | Yes | Self-contained task prompt (≥10 chars, ≤200,000 chars). The engine has **no context** beyond this string. |
 | `cwd` | `string` | No | Absolute working directory path. Defaults to the server's cwd. |
 | `timeout_ms` | `number` | No | Timeout in ms. Range: 10,000–3,600,000. Default: 300,000 (5 min). |
@@ -135,6 +136,7 @@ Each engine supports two permission levels, selected by the `yolo` parameter:
 | Codex | `exec --full-auto` (workspace-write sandbox, on-request approvals) | `exec --dangerously-bypass-approvals-and-sandbox` (no sandbox, no approvals) |
 | Gemini | `--approval-mode=auto_edit` (auto-approves file writes only) | `--yolo` (auto-approves all tools including shell commands) |
 | Claude | `--dangerously-skip-permissions` | `--dangerously-skip-permissions` (same — no safer option exists) |
+| OpenCode | `run --dangerously-skip-permissions` (permissions via config file) | `run --dangerously-skip-permissions` (same — config file determines policy) |
 
 Safe mode is sufficient for read-only analysis tasks. Use YOLO mode when the engine needs unrestricted shell access or you're running in an externally sandboxed environment.
 
