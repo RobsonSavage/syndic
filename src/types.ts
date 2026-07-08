@@ -16,6 +16,8 @@ export interface EngineConfig {
   yoloArgs: string[];
   /** Flag preceding the prompt string (e.g. '-p'). Empty string = positional (no flag). */
   promptFlag: string;
+  /** Extra environment variables injected into the engine process. */
+  env?: Record<string, string>;
 }
 
 export interface Task {
@@ -49,6 +51,10 @@ export const ENGINE_CONFIGS: Record<EngineType, EngineConfig> = {
     safeArgs: ['--approval-mode=auto_edit'],
     yoloArgs: ['--yolo'],
     promptFlag: '-p',
+    // Gemini CLI refuses to run in an untrusted workspace (exit code 55)
+    // unless this is set. Injecting it here makes the parent shell's
+    // environment irrelevant — a long-running syndic server works regardless.
+    env: { GEMINI_CLI_TRUST_WORKSPACE: 'true' },
   },
   claude: {
     command: 'claude',

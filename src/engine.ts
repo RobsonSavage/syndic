@@ -182,6 +182,7 @@ export class EngineManager {
         ...process.env,
         // Prevent MSYS2 from mangling paths passed as arguments
         MSYS2_ARG_CONV_EXCL: '*',
+        ...config.env,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
