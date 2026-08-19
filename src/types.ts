@@ -81,8 +81,8 @@ export const ENGINE_CONFIGS: Record<EngineType, EngineConfig> = {
 /** Directory inside cwd where sentinel files and prompt files are written */
 export const SYNDIC_DIR = '.syndic';
 
-/** Default task timeout: 5 minutes */
-export const DEFAULT_TIMEOUT_MS = 5 * 60 * 1000;
+/** Default task timeout: 30 minutes */
+export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 
 /**
  * Maximum allowed prompt size in characters (~50k tokens at 4 chars/token).

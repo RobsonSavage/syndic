@@ -76,7 +76,7 @@ Spawn an external AI CLI engine to execute a task.
 | `engine` | `"codex" \| "gemini" \| "claude" \| "opencode"` | Yes | Which CLI engine to invoke |
 | `prompt` | `string` | Yes | Self-contained task prompt (≥10 chars, ≤200,000 chars). The engine has **no context** beyond this string. |
 | `cwd` | `string` | No | Absolute working directory path. Defaults to the server's cwd. |
-| `timeout_ms` | `number` | No | Timeout in ms. Range: 10,000–3,600,000. Default: 300,000 (5 min). |
+| `timeout_ms` | `number` | No | Timeout in ms. Range: 10,000–3,600,000. Default: 1,800,000 (30 min). |
 | `wait` | `boolean` | No | If `true`, block until the task completes or times out. Default: `false` (returns `task_id` immediately). |
 | `yolo` | `boolean` | No | If `true`, run engine without guardrails. Default: `false` (safe mode). See [Safe mode vs YOLO mode](#safe-mode-vs-yolo-mode). |
 

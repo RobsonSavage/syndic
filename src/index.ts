@@ -43,7 +43,7 @@ server.tool(
       .min(10_000)
       .max(3_600_000)
       .optional()
-      .describe('Timeout in ms. Default: 300000 (5 min). Max: 3600000 (1 hr).'),
+      .describe('Timeout in ms. Default: 1800000 (30 min). Max: 3600000 (1 hr).'),
     wait: z
       .boolean()
       .optional()
