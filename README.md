@@ -133,7 +133,7 @@ Each engine supports two permission levels, selected by the `yolo` parameter:
 
 | Engine | Safe (`yolo: false`, default) | YOLO (`yolo: true`) |
 |--------|-------------------------------|---------------------|
-| Codex | `exec --full-auto` (workspace-write sandbox, on-request approvals) | `exec --dangerously-bypass-approvals-and-sandbox` (no sandbox, no approvals) |
+| Codex | `exec -s workspace-write` (writes confined to workspace, unrestricted reads) | `exec --dangerously-bypass-approvals-and-sandbox` (no sandbox, no approvals) |
 | Gemini | `--approval-mode=auto_edit` (auto-approves file writes only) | `--yolo` (auto-approves all tools including shell commands) |
 | Claude | `--dangerously-skip-permissions` | `--dangerously-skip-permissions` (same — no safer option exists) |
 | OpenCode | `run --dangerously-skip-permissions` (permissions via config file) | `run --dangerously-skip-permissions` (same — config file determines policy) |
