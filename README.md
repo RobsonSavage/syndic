@@ -79,6 +79,12 @@ Spawn an external AI CLI engine to execute a task.
 | `timeout_ms` | `number` | No | Timeout in ms. Range: 10,000–3,600,000. Default: 1,800,000 (30 min). |
 | `wait` | `boolean` | No | If `true`, block until the task completes or times out. Default: `false` (returns `task_id` immediately). |
 | `yolo` | `boolean` | No | If `true`, run engine without guardrails. Default: `false` (safe mode). See [Safe mode vs YOLO mode](#safe-mode-vs-yolo-mode). |
+| `model` | `string` | No | Model override for Codex, Gemini, Claude Code, or OpenCode (`provider/model`). Omit to use the CLI default. For Gemini, only set when the user explicitly requests a model. |
+| `reasoning_effort` | `string` | No | Codex or Claude Code reasoning effort, or OpenCode model variant, supported by the selected model/provider. Omit to use the CLI default. Rejected for Gemini. |
+
+For Codex with Astra at max effort, pass `engine="codex", model="gpt-6-astra", reasoning_effort="max"` to `syndic_run` along with the task prompt. These settings override the CLI defaults for that invocation. OpenCode receives the same fields through `--model` and `--variant`; use its provider/model identifier and a supported variant.
+
+For Claude Code, pass `engine="claude"`, optionally with `model="opus"` and `reasoning_effort="max"`. Syndic launches `claude -p` and forwards the overrides through `--model` and `--effort`. Without overrides, Claude Code uses its configured defaults.
 
 **Async response** (`wait: false`):
 ```json
@@ -136,7 +142,7 @@ Each engine supports two permission levels, selected by the `yolo` parameter:
 | Codex | `exec -s workspace-write` (writes confined to workspace, unrestricted reads) | `exec --dangerously-bypass-approvals-and-sandbox` (no sandbox, no approvals) |
 | Gemini | `--approval-mode=auto_edit` (auto-approves file writes only) | `--yolo` (auto-approves all tools including shell commands) |
 | Claude | `--dangerously-skip-permissions` | `--dangerously-skip-permissions` (same — no safer option exists) |
-| OpenCode | `run --dangerously-skip-permissions` (permissions via config file) | `run --dangerously-skip-permissions` (same — config file determines policy) |
+| OpenCode | `run --auto` (auto-approve unless explicitly denied by config) | `run --auto` (same policy) |
 
 Safe mode is sufficient for read-only analysis tasks. Use YOLO mode when the engine needs unrestricted shell access or you're running in an externally sandboxed environment.
 

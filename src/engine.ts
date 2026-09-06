@@ -104,7 +104,17 @@ export class EngineManager {
     wait?: boolean,
     yolo?: boolean,
     model?: string,
+    reasoningEffort?: string,
   ): Promise<Task> {
+    // These values cross cmd.exe: accept identifiers, never shell syntax.
+    for (const [name, value] of [['model', model], ['reasoning_effort', reasoningEffort]]) {
+      if (value !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(value)) {
+        throw new Error(`Invalid ${name}: expected a non-empty model or effort identifier.`);
+      }
+    }
+    if (reasoningEffort !== undefined && engine === 'gemini') {
+      throw new Error(`reasoning_effort is not supported for ${engine}.`);
+    }
     if (prompt.length > MAX_PROMPT_CHARS) {
       throw new Error(
         `Prompt too large: ${prompt.length.toLocaleString()} chars exceeds limit of ${MAX_PROMPT_CHARS.toLocaleString()}. ` +
@@ -173,8 +183,16 @@ export class EngineManager {
     const modeArgs =
       engine === 'opencode' ? [...baseModeArgs, '--dir', workDir] : baseModeArgs;
     const promptArgs = config.promptFlag ? [config.promptFlag, bootPrompt] : [bootPrompt];
-    const modelArgs = engine === 'gemini' ? ['--model', model ?? 'auto-gemini-3'] : [];
-    const spawnArgs = ['/c', config.command, ...modelArgs, ...modeArgs, ...promptArgs];
+    const modelArgs = model !== undefined ? ['--model', model] : [];
+    const effortArgs = reasoningEffort === undefined ? [] : engine === 'codex'
+      ? ['-c', `model_reasoning_effort=${reasoningEffort}`]
+      : [engine === 'claude' ? '--effort' : '--variant', reasoningEffort];
+    const spawnArgs = ['/c', config.command, ...modeArgs, ...modelArgs, ...effortArgs, ...promptArgs];
+
+    process.stderr.write(
+      `[INFO] Starting ${engine} task ${taskId}; model=${modelArgs.length ? model : 'CLI default'}; ` +
+      `reasoning_effort=${reasoningEffort ?? 'CLI default'}\n`,
+    );
 
     const proc = spawn('cmd.exe', spawnArgs, {
       cwd: workDir,

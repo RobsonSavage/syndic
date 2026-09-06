@@ -66,17 +66,12 @@ export const ENGINE_CONFIGS: Record<EngineType, EngineConfig> = {
     promptFlag: '-p',
   },
   // `opencode run` is the headless subcommand. Positional prompt.
-  // Permissions are centrally managed in ~/.config/opencode/config.json; the
-  // `--dangerously-skip-permissions` flag lets the headless run honour those
-  // config-level allow/deny rules without hitting interactive approval prompts
-  // (opencode has no intermediate "auto-edit" mode between full-interactive
-  // and skip-permissions). Safe and yolo are therefore identical at the CLI
-  // level — the tighter safe policy is enforced by the config file, not the
-  // spawn args.
+  // --auto approves permissions that are not explicitly denied by config.
+  // Safe and yolo use the same CLI policy for this engine.
   opencode: {
     command: 'opencode',
-    safeArgs: ['run', '--dangerously-skip-permissions'],
-    yoloArgs: ['run', '--dangerously-skip-permissions'],
+    safeArgs: ['run', '--auto'],
+    yoloArgs: ['run', '--auto'],
     promptFlag: '',
   },
 };

@@ -29,7 +29,7 @@ server.tool(
   {
     engine: z
       .enum(['codex', 'gemini', 'claude', 'opencode'])
-      .describe('Which CLI engine to invoke'),
+      .describe('Which CLI engine to invoke. Use claude for Claude Code CLI.'),
     prompt: z
       .string()
       .min(10)
@@ -60,12 +60,21 @@ server.tool(
       .string()
       .optional()
       .describe(
-        'Model to use when engine=gemini. Defaults to "auto-gemini-3". Has no effect for other engines.',
+        'Optional model override for Codex, Gemini, Claude Code, or OpenCode (provider/model). ' +
+        'Omit to use the CLI default. For Gemini, do not set this unless the user explicitly requests a model.',
+      ),
+    reasoning_effort: z
+      .string()
+      .optional()
+      .describe(
+        'Optional reasoning effort for Codex or Claude Code (for example max), or model variant for OpenCode. ' +
+        'Must be supported by the selected model/provider. Omit to use the CLI default. ' +
+        'Not supported for Gemini.',
       ),
   },
-  async ({ engine, prompt, cwd, timeout_ms, wait, yolo, model }) => {
+  async ({ engine, prompt, cwd, timeout_ms, wait, yolo, model, reasoning_effort }) => {
     try {
-      const task = await manager.run(engine, prompt, cwd, timeout_ms, wait, yolo, model);
+      const task = await manager.run(engine, prompt, cwd, timeout_ms, wait, yolo, model, reasoning_effort);
 
       if (wait && task.status !== 'running') {
         return {
