@@ -1,4 +1,7 @@
 node_modules/
 dist/
 .syndic/
+/.kibitz/
+/.memsearch/
+/handoffs/
 *.tsbuildinfo
