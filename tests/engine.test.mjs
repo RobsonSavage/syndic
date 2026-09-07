@@ -1,27 +1,22 @@
 import assert from 'node:assert/strict';
-import childProcess from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
-import { syncBuiltinESMExports } from 'node:module';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
 test('engine launch overrides and defaults', async () => {
   const cwd = await mkdtemp(join(process.cwd(), '.syndic-test-'));
-  const originalSpawn = childProcess.spawn;
   const launches = [];
-  childProcess.spawn = (command, args, options) => {
-    launches.push({ command, args, options });
+  const launch = async (command, args, workdir, env) => {
+    launches.push({ command: 'cmd.exe', args: ['/c', command, ...args], options: { cwd: workdir, env, windowsHide: true } });
     const proc = new EventEmitter();
     proc.stdout = new EventEmitter();
     proc.stderr = new EventEmitter();
-    proc.kill = () => { proc.killed = true; };
-    return proc;
+    return { proc, receipt: async () => ({ pid: 123, termination: 'stopped', exit_code: 0 }),
+      stop: () => { queueMicrotask(() => proc.emit('close', 0)); } };
   };
-  syncBuiltinESMExports();
-  assert.equal((await import('node:child_process')).spawn, childProcess.spawn);
   const { EngineManager } = await import('../dist/engine.js');
-  const manager = new EngineManager();
+  const manager = new EngineManager(launch);
   try {
     for (const yolo of [false, true]) {
       for (const engine of ['codex', 'opencode', 'gemini', 'claude']) {
@@ -79,9 +74,7 @@ test('engine launch overrides and defaults', async () => {
       assert.deepEqual(await readdir(join(cwd, '.syndic')), before);
     }
   } finally {
-    manager.shutdown();
-    childProcess.spawn = originalSpawn;
-    syncBuiltinESMExports();
+    await manager.shutdown();
     await rm(cwd, { recursive: true, force: true });
   }
 });

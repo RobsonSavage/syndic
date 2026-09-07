@@ -3,6 +3,7 @@ export type EngineType = 'codex' | 'gemini' | 'claude' | 'opencode';
 export type TaskStatus =
   | 'pending'
   | 'running'
+  | 'stopping'
   | 'completed'
   | 'failed'
   | 'cancelled'
@@ -34,6 +35,11 @@ export interface Task {
   completedAt: number | null;
   pid: number | null;
   error: string | null;
+  termination: 'running' | 'stopping' | 'stopped' | 'unknown';
+  terminationError: string | null;
+  requested: { model: string | null; reasoning_effort: string | null };
+  launch: { model: string | null; reasoning_effort: string | null; mode: string };
+  observed: { model: string | null; reasoning_effort: string | null; source: string | null };
 }
 
 export const ENGINE_CONFIGS: Record<EngineType, EngineConfig> = {
@@ -61,7 +67,7 @@ export const ENGINE_CONFIGS: Record<EngineType, EngineConfig> = {
   },
   claude: {
     command: 'claude',
-    safeArgs: ['--dangerously-skip-permissions'],
+    safeArgs: ['--permission-mode', 'dontAsk'],
     yoloArgs: ['--dangerously-skip-permissions'],
     promptFlag: '-p',
   },

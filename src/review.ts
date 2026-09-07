@@ -1,0 +1,95 @@
+import { mkdtemp, writeFile, readFile, rm, realpath } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { isAbsolute, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import type { EngineType, Task } from './types.js';
+
+export interface ReviewOptions {
+  inputs: string[];
+  roslyn?: { command: string; args?: string[] };
+}
+export interface ReviewLaunch {
+  cwd: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+  result(): Promise<string>;
+  observe(task: Task, stdout: string, stderr: string): void;
+  cleanup(): Promise<void>;
+}
+
+export function reviewEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const allowed = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP',
+    'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)',
+    'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS', 'CODEX_HOME',
+    'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']);
+  return Object.fromEntries(Object.entries(source).filter(([key]) => allowed.has(key.toUpperCase())));
+}
+
+export async function prepareReview(engine: EngineType, root: string, prompt: string,
+  options: ReviewOptions): Promise<ReviewLaunch> {
+  if (engine !== 'claude' && engine !== 'codex') throw new Error('Review mode supports Claude and Codex only');
+  if (options.roslyn && (!isAbsolute(options.roslyn.command) || !/\.exe$/i.test(options.roslyn.command))) {
+    throw new Error('review_roslyn.command must be the absolute trusted executable path');
+  }
+  const inputs = await Promise.all(options.inputs.map(path => realpath(path)));
+  const cwd = await mkdtemp(join(tmpdir(), 'syndic-review-'));
+  const cleanup = async () => {
+    await rm(cwd, { recursive: true, force: true });
+  };
+  try {
+    const promptPath = join(cwd, 'task.prompt');
+    await writeFile(promptPath, prompt + '\n\nReturn the complete Markdown report as your final response. Syndic saves it. Do not write files.\n', 'utf8');
+    await writeFile(join(cwd, 'access.json'), JSON.stringify({ root, inputs: [...inputs, promptPath], roslyn: options.roslyn }), 'utf8');
+    const server = { command: process.execPath, args: [fileURLToPath(new URL('./review-server.js', import.meta.url)), join(cwd, 'access.json')] };
+    const env = { ...reviewEnvironment(process.env), MSYS2_ARG_CONV_EXCL: '*', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' };
+    const boot = `Use the syndic_review read_file tool to read ${promptPath.replaceAll('\\', '/')} and perform that review. Return the report in your final response`;
+    let args: string[];
+    if (engine === 'claude') {
+      await writeFile(join(cwd, 'mcp.json'), JSON.stringify({ mcpServers: { syndic_review: server } }), 'utf8');
+      await writeFile(join(cwd, 'settings.json'), JSON.stringify({ disableAllHooks: true, autoMemoryEnabled: false }), 'utf8');
+      args = ['--restricted', '--strict-mcp-config', '--mcp-config', 'mcp.json', '--tools', '',
+        '--permission-mode', 'dontAsk', '--allowedTools', 'mcp__syndic_review__*',
+        '--setting-sources', '', '--settings', 'settings.json', '--disable-slash-commands',
+        '--no-session-persistence', '--no-chrome', '--output-format', 'stream-json', '--verbose',
+        '--system-prompt', 'Review only the supplied evidence using the syndic_review tools. Return a Markdown report. Memory and external actions are outside this task.',
+        '-p', boot];
+    } else {
+      // --ignore-user-config also suppresses file profiles on the installed CLI.
+      // Explicit overrides are applied after that suppression. No auth is copied.
+      const overrides = ['project_doc_max_bytes=0', 'web_search="disabled"',
+        'features.shell_tool=false', 'features.code_mode=false', 'features.code_mode_host=true',
+        'features.apps=false', 'features.plugins=false', 'features.hooks=false', 'features.memories=false',
+        'features.multi_agent=false', 'features.skill_search=false', 'features.skip_host_skill_discovery=true',
+        `mcp_servers.syndic_review.command=${JSON.stringify(server.command)}`,
+        `mcp_servers.syndic_review.args=${JSON.stringify(server.args)}`,
+        'mcp_servers.syndic_review.startup_timeout_sec=120', 'mcp_servers.syndic_review.tool_timeout_sec=120'];
+      args = ['exec', '--ignore-user-config', '--ignore-rules', '--strict-config', '--ephemeral',
+        '--skip-git-repo-check', '-s', 'read-only', ...overrides.flatMap(value => ['-c', value]), '-o', 'response.md', boot];
+    }
+    let response = '';
+    return { cwd, args, env, cleanup,
+      observe(task, stdout, stderr) {
+        if (engine === 'claude') {
+          for (const line of stdout.split(/\r?\n/)) {
+            try {
+              const event = JSON.parse(line);
+              if (event.type === 'system' && event.subtype === 'init' && typeof event.model === 'string') {
+                task.observed = { model: event.model, reasoning_effort: null, source: 'CLI system.init event' };
+              }
+              if (event.type === 'result' && !event.is_error && typeof event.result === 'string') response = event.result;
+            } catch { }
+          }
+        } else {
+          const model = /^model:\s*(\S+)\s*$/m.exec(stderr)?.[1];
+          const effort = /^reasoning effort:\s*(\S+)\s*$/m.exec(stderr)?.[1];
+          if (model || effort) task.observed = { model: model ?? null, reasoning_effort: effort ?? null, source: 'CLI launch banner' };
+        }
+      },
+      async result() {
+        const output = engine === 'codex' ? await readFile(join(cwd, 'response.md'), 'utf8') : response;
+        if (!output.trim()) throw new Error('CLI did not return a review report');
+        return output;
+      },
+    };
+  } catch (error) { await cleanup(); throw error; }
+}

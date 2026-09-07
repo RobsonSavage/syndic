@@ -3,6 +3,8 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { EngineManager } from './engine.js';
+import type { Task } from './types.js';
+import { readFileSync } from 'node:fs';
 
 // ---------------------------------------------------------------------------
 // Server
@@ -10,10 +12,19 @@ import { EngineManager } from './engine.js';
 
 const server = new McpServer({
   name: 'syndic-mcp',
-  version: '0.1.0',
+  version: JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version,
 });
 
 const manager = new EngineManager();
+
+function taskInfo(task: Task): Record<string, unknown> {
+  return {
+    task_id: task.id, status: task.status, engine: task.engine,
+    duration_ms: (task.completedAt ?? Date.now()) - task.startedAt,
+    requested: task.requested, launch: task.launch, observed: task.observed,
+    pid: task.pid, termination: task.termination, termination_error: task.terminationError,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Tools
@@ -54,7 +65,8 @@ server.tool(
       .describe(
         'If true, run with no guardrails: Gemini uses --yolo, Codex uses --dangerously-bypass-approvals-and-sandbox. ' +
         'Opencode has no safe/yolo distinction at the CLI level (permissions are enforced via ~/.config/opencode/config.json). ' +
-        'Default: false (safe mode - auto_edit / workspace-write sandbox).',
+        'Claude safe mode uses dontAsk; unapproved operations are denied. ' +
+        'Default: false. These engine defaults are not a read-only review boundary.',
       ),
     model: z
       .string()
@@ -71,10 +83,16 @@ server.tool(
         'Must be supported by the selected model/provider. Omit to use the CLI default. ' +
         'Not supported for Gemini.',
       ),
+    mode: z.enum(['default', 'review']).optional().describe('review: controlled read/semantic MCP tools, no shell or report-write tools; syndic captures the final report. Claude/Codex only.'),
+    review_inputs: z.array(z.string()).optional().describe('Absolute paths to the factual packet/procedure/evidence the restricted reviewer may read, in addition to tracked source.'),
+    review_roslyn: z.object({ command: z.string(), args: z.array(z.string()).optional() }).optional()
+      .describe('Trusted Roslyn executable and arguments from host configuration. Only an allowlist of semantic tools is exposed; no memory or mutations.'),
   },
-  async ({ engine, prompt, cwd, timeout_ms, wait, yolo, model, reasoning_effort }) => {
+  async ({ engine, prompt, cwd, timeout_ms, wait, yolo, model, reasoning_effort, mode, review_inputs, review_roslyn }) => {
     try {
-      const task = await manager.run(engine, prompt, cwd, timeout_ms, wait, yolo, model, reasoning_effort);
+      if (mode !== 'review' && (review_inputs || review_roslyn)) throw new Error('Review options require mode=review');
+      const task = await manager.run(engine, prompt, cwd, timeout_ms, wait, yolo, model, reasoning_effort,
+        mode === 'review' ? { inputs: review_inputs ?? [], roslyn: review_roslyn } : undefined);
 
       if (wait && task.status !== 'running') {
         return {
@@ -83,10 +101,7 @@ server.tool(
               type: 'text' as const,
               text: JSON.stringify(
                 {
-                  task_id: task.id,
-                  status: task.status,
-                  engine: task.engine,
-                  duration_ms: (task.completedAt ?? Date.now()) - task.startedAt,
+                  ...taskInfo(task),
                   output_content: task.outputContent,
                   result: (task.sentinelContent || task.stdout || 'No output captured').substring(
                     0,
@@ -108,9 +123,7 @@ server.tool(
             type: 'text' as const,
             text: JSON.stringify(
               {
-                task_id: task.id,
-                status: 'running',
-                engine: task.engine,
+                ...taskInfo(task),
                 message: 'Task spawned. Use syndic_status to check progress.',
               },
               null,
@@ -140,7 +153,7 @@ server.tool(
     task_id: z.string().describe('Task ID returned by syndic_run'),
   },
   async ({ task_id }) => {
-    const task = manager.getTask(task_id);
+    const task = await manager.inspectTask(task_id);
     if (!task) {
       return {
         content: [{ type: 'text' as const, text: `Unknown task: ${task_id}` }],
@@ -148,14 +161,9 @@ server.tool(
       };
     }
 
-    const info: Record<string, unknown> = {
-      task_id: task.id,
-      status: task.status,
-      engine: task.engine,
-      duration_ms: (task.completedAt ?? Date.now()) - task.startedAt,
-    };
+    const info = taskInfo(task);
 
-    if (task.status !== 'running') {
+    if (task.status !== 'running' && task.status !== 'stopping') {
       info.output_content = task.outputContent;
       info.result = (task.sentinelContent || task.stdout || 'No output').substring(0, 50_000);
       info.error = task.error;
@@ -173,19 +181,18 @@ server.tool(
 
 server.tool(
   'syndic_cancel',
-  'Cancel a running syndic task. Kills the engine process immediately.',
+  'Stop the task process job and wait for termination evidence. Returns termination state; unknown is not stopped.',
   {
     task_id: z.string().describe('Task ID to cancel'),
   },
   async ({ task_id }) => {
-    const success = manager.cancel(task_id);
+    const success = await manager.cancel(task_id);
+    const task = manager.getTask(task_id);
     return {
       content: [
         {
           type: 'text' as const,
-          text: success
-            ? `Task ${task_id} cancelled.`
-            : `Task ${task_id} not found or already finished.`,
+          text: JSON.stringify({ accepted: success, ...(task ? taskInfo(task) : { error: 'Unknown task' }) }),
         },
       ],
     };
@@ -206,11 +213,10 @@ main().catch((err) => {
   process.exit(1);
 });
 
-process.on('SIGINT', () => {
-  manager.shutdown();
+async function shutdown(): Promise<void> {
+  await manager.shutdown();
   process.exit(0);
-});
-process.on('SIGTERM', () => {
-  manager.shutdown();
-  process.exit(0);
-});
+}
+process.on('SIGINT', () => { void shutdown(); });
+process.on('SIGTERM', () => { void shutdown(); });
+process.stdin.on('end', () => { void shutdown(); });

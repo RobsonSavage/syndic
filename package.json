@@ -1,6 +1,6 @@
 {
   "name": "syndic-mcp",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "MCP server for orchestrating external AI CLI engines with sentinel-file completion detection",
   "type": "module",
   "main": "dist/index.js",
@@ -11,10 +11,11 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc",
+    "build": "tsc && node scripts/copy-native.mjs",
+    "test": "npm run build && node --test tests/*.test.mjs",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
-    "prepublishOnly": "tsc"
+    "prepublishOnly": "npm run build"
   },
   "keywords": [
     "mcp",

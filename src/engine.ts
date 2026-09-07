@@ -1,8 +1,10 @@
-import { spawn, type ChildProcess } from 'node:child_process';
 import { watch, type FSWatcher } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { nanoid } from 'nanoid';
+import { launchProcess, type ManagedProcess } from './process.js';
+import { parseSentinel } from './sentinel.js';
+import { prepareReview, type ReviewOptions, type ReviewLaunch } from './review.js';
 import {
   type Task,
   type TaskStatus,
@@ -87,10 +89,16 @@ RULES:
 
 export class EngineManager {
   private tasks = new Map<string, Task>();
-  private processes = new Map<string, ChildProcess>();
+  private processes = new Map<string, ManagedProcess>();
+  private closed = new Map<string, Promise<void>>();
+  private finishing = new Map<string, Promise<void>>();
+  private reviews = new Map<string, ReviewLaunch>();
+  private streams = new Map<string, { stdout: string; stderr: string }>();
   private watchers = new Map<string, FSWatcher>();
   private timeouts = new Map<string, ReturnType<typeof setTimeout>>();
   private waitResolvers = new Map<string, (task: Task) => void>();
+
+  constructor(private launchProcessImpl = launchProcess) { }
 
   // -----------------------------------------------------------------------
   // Public API
@@ -105,7 +113,11 @@ export class EngineManager {
     yolo?: boolean,
     model?: string,
     reasoningEffort?: string,
+    review?: ReviewOptions,
   ): Promise<Task> {
+    if (review && (yolo || (engine !== 'claude' && engine !== 'codex'))) {
+      throw new Error('Review mode requires Claude or Codex and yolo=false');
+    }
     // These values cross cmd.exe: accept identifiers, never shell syntax.
     for (const [name, value] of [['model', model], ['reasoning_effort', reasoningEffort]]) {
       if (value !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(value)) {
@@ -155,6 +167,9 @@ export class EngineManager {
       'Start immediately. Do not ask for confirmation.',
     ].join('. ');
 
+    const reviewer = review ? await prepareReview(engine, workDir, prompt, review) : undefined;
+    if (reviewer) this.reviews.set(taskId, reviewer);
+
     // --- task record ---
     const task: Task = {
       id: taskId,
@@ -169,10 +184,15 @@ export class EngineManager {
       completedAt: null,
       pid: null,
       error: null,
+      termination: 'running',
+      terminationError: null,
+      requested: { model: model ?? null, reasoning_effort: reasoningEffort ?? null },
+      launch: { model: model ?? null, reasoning_effort: reasoningEffort ?? null, mode: reviewer ? 'review' : yolo ? 'unrestricted' : 'default' },
+      observed: { model: null, reasoning_effort: null, source: null },
     };
     this.tasks.set(taskId, task);
 
-    // --- spawn via cmd.exe /c  to handle .cmd shims on Windows ---
+    // --- launch through the Windows process-job supervisor ---
     const config = ENGINE_CONFIGS[engine];
     const baseModeArgs = yolo ? config.yoloArgs : config.safeArgs;
     // Opencode ignores the inherited OS cwd on Windows and needs --dir set
@@ -187,51 +207,68 @@ export class EngineManager {
     const effortArgs = reasoningEffort === undefined ? [] : engine === 'codex'
       ? ['-c', `model_reasoning_effort=${reasoningEffort}`]
       : [engine === 'claude' ? '--effort' : '--variant', reasoningEffort];
-    const spawnArgs = ['/c', config.command, ...modeArgs, ...modelArgs, ...effortArgs, ...promptArgs];
+    const spawnArgs = reviewer ? [...reviewer.args.slice(0, -1), ...modelArgs, ...effortArgs, reviewer.args.at(-1)!]
+      : [...modeArgs, ...modelArgs, ...effortArgs, ...promptArgs];
 
     process.stderr.write(
       `[INFO] Starting ${engine} task ${taskId}; model=${modelArgs.length ? model : 'CLI default'}; ` +
       `reasoning_effort=${reasoningEffort ?? 'CLI default'}\n`,
     );
 
-    const proc = spawn('cmd.exe', spawnArgs, {
-      cwd: workDir,
-      env: {
+    let managed: ManagedProcess;
+    try {
+      managed = await this.launchProcessImpl(config.command, spawnArgs, reviewer?.cwd ?? workDir, reviewer?.env ?? {
         ...process.env,
         // Prevent MSYS2 from mangling paths passed as arguments
         MSYS2_ARG_CONV_EXCL: '*',
         ...config.env,
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
-
-    task.pid = proc.pid ?? null;
-    this.processes.set(taskId, proc);
+      }, join(syndicDir, `${taskId}.launch.json`));
+    } catch (error) {
+      await reviewer?.cleanup();
+      this.reviews.delete(taskId);
+      this.tasks.delete(taskId);
+      throw error;
+    }
+    const proc = managed.proc;
+    proc.stdout?.setEncoding?.('utf8');
+    proc.stderr?.setEncoding?.('utf8');
+    this.processes.set(taskId, managed);
+    const streams = { stdout: '', stderr: '' };
+    this.streams.set(taskId, streams);
 
     // --- collect stdout / stderr ---
     proc.stdout?.on('data', (chunk: Buffer) => {
       task.stdout += chunk.toString();
+      streams.stdout += chunk.toString();
     });
     proc.stderr?.on('data', (chunk: Buffer) => {
       task.stdout += chunk.toString();
+      streams.stderr += chunk.toString();
     });
 
     // --- watch for sentinel file ---
-    this.startSentinelWatch(taskId, syndicDir, sentinelFile);
+    if (!reviewer) this.startSentinelWatch(taskId, syndicDir, sentinelFile);
 
     // --- process lifecycle ---
-    proc.on('exit', (code) => {
-      this.handleProcessExit(taskId, code, join(syndicDir, sentinelFile), syndicDir);
-    });
+    this.closed.set(taskId, new Promise<void>(resolveClosed => {
+      proc.once('close', () => {
+        resolveClosed();
+        void managed.receipt().then(receipt => {
+          task.pid = receipt?.pid ?? null;
+          if (task.status === 'running') {
+            void this.handleProcessExit(taskId, receipt?.exit_code ?? null, join(syndicDir, sentinelFile), syndicDir);
+          }
+        });
+      });
+    }));
     proc.on('error', (err) => {
-      this.completeTask(taskId, 'failed', null, null, `Spawn error: ${err.message}`);
+      void this.completeTask(taskId, 'failed', null, null, `Spawn error: ${err.message}`);
     });
 
     // --- timeout ---
     const timer = setTimeout(() => {
       if (task.status === 'running') {
-        this.completeTask(taskId, 'timed_out', null, null, `Timed out after ${timeout}ms`);
+        void this.completeTask(taskId, 'timed_out', null, null, `Timed out after ${timeout}ms`);
       }
     }, timeout);
     this.timeouts.set(taskId, timer);
@@ -251,19 +288,28 @@ export class EngineManager {
     return this.tasks.get(taskId);
   }
 
-  cancel(taskId: string): boolean {
+  async inspectTask(taskId: string): Promise<Task | undefined> {
     const task = this.tasks.get(taskId);
-    if (!task || task.status !== 'running') return false;
-    this.completeTask(taskId, 'cancelled', null, null, 'Cancelled by user');
+    const receipt = await this.processes.get(taskId)?.receipt();
+    if (task && receipt) task.pid = receipt.pid;
+    return task;
+  }
+
+  async cancel(taskId: string): Promise<boolean> {
+    const task = this.tasks.get(taskId);
+    if (!task || task.termination === 'stopped') return false;
+    await this.completeTask(taskId, 'cancelled', null, null, 'Cancelled by user');
     return true;
   }
 
-  shutdown(): void {
+  async shutdown(): Promise<void> {
+    const pending: Promise<void>[] = [];
     for (const [taskId, task] of this.tasks) {
-      if (task.status === 'running') {
-        this.completeTask(taskId, 'cancelled', null, null, 'Server shutting down');
+      if (task.termination !== 'stopped') {
+        pending.push(this.completeTask(taskId, 'cancelled', null, null, 'Server shutting down'));
       }
     }
+    await Promise.all(pending);
   }
 
   // -----------------------------------------------------------------------
@@ -299,9 +345,11 @@ export class EngineManager {
 
     try {
       const content = await readFile(sentinelPath, 'utf-8');
-      const status: TaskStatus = content.includes('status: failed') ? 'failed' : 'completed';
+      const status = parseSentinel(content);
+      if (!status) return;
       const output = await this.readOutputFile(syndicDir, taskId);
-      this.completeTask(taskId, status, content, output, null);
+      if (output === null) return;
+      await this.completeTask(taskId, status, content, output, null);
     } catch {
       // File not fully written yet — process exit handler will retry
     }
@@ -320,15 +368,33 @@ export class EngineManager {
     const task = this.tasks.get(taskId);
     if (!task || task.status !== 'running') return;
 
+    const reviewer = this.reviews.get(taskId);
+    if (reviewer) {
+      const streams = this.streams.get(taskId)!;
+      reviewer.observe(task, streams.stdout, streams.stderr);
+      try {
+        if (code !== 0) throw new Error(`Review CLI exited with code ${code}`);
+        const output = await reviewer.result();
+        const sentinel = '---\nstatus: completed\n---\n\n## Summary\nReview report captured by syndic.\n';
+        await writeFile(join(syndicDir, `${taskId}.output.md`), output, 'utf8');
+        await writeFile(sentinelFilePath, sentinel, 'utf8');
+        await this.completeTask(taskId, 'completed', sentinel, output, null);
+      } catch (error) {
+        await this.completeTask(taskId, 'failed', null, null, error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
+
     // Small delay for sentinel file to be flushed to disk
     await new Promise((r) => setTimeout(r, 500));
 
     // Try reading sentinel even if watcher missed it
     try {
       const content = await readFile(sentinelFilePath, 'utf-8');
-      const status: TaskStatus = content.includes('status: failed') ? 'failed' : 'completed';
+      const status = parseSentinel(content);
       const output = await this.readOutputFile(syndicDir, taskId);
-      this.completeTask(taskId, status, content, output, null);
+      await this.completeTask(taskId, status && output !== null ? status : 'failed', content, output,
+        !status ? 'Invalid or incomplete sentinel frontmatter' : output === null ? 'Missing output artifact' : null);
       return;
     } catch {
       // No sentinel file
@@ -336,9 +402,9 @@ export class EngineManager {
 
     // Fallback: use process exit code
     if (code === 0) {
-      this.completeTask(taskId, 'completed', null, null, null);
+      await this.completeTask(taskId, 'completed', null, null, null);
     } else {
-      this.completeTask(
+      await this.completeTask(
         taskId,
         'failed',
         null,
@@ -358,18 +424,55 @@ export class EngineManager {
     sentinel: string | null,
     output: string | null,
     error: string | null,
-  ): void {
+  ): Promise<void> {
     const task = this.tasks.get(taskId);
-    if (!task || task.status !== 'running') return;
+    if (!task || task.termination === 'stopped') return Promise.resolve();
+    const current = this.finishing.get(taskId);
+    if (current) return current;
+    const finish = this.finishTask(task, status, sentinel, output, error);
+    this.finishing.set(taskId, finish);
+    void finish.finally(() => this.finishing.delete(taskId));
+    return finish;
+  }
 
-    task.status = status;
+  private async finishTask(task: Task, status: TaskStatus, sentinel: string | null,
+    output: string | null, error: string | null): Promise<void> {
+    const taskId = task.id;
+    task.status = 'stopping';
+    task.termination = 'stopping';
+    process.stderr.write(`[INFO] Stopping task ${taskId}; outcome=${status}\n`);
+    this.cleanup(taskId);
+    const managed = this.processes.get(taskId);
+    managed?.stop();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([this.closed.get(taskId) ?? Promise.resolve(),
+      new Promise<void>(resolve => { timer = setTimeout(resolve, 15_000); })]);
+    if (timer) clearTimeout(timer);
+    const receipt = await managed?.receipt();
+    const streams = this.streams.get(taskId);
+    if (streams) this.reviews.get(taskId)?.observe(task, streams.stdout, streams.stderr);
+    task.pid = receipt?.pid ?? null;
+    task.termination = receipt?.termination === 'stopped' ? 'stopped' : 'unknown';
+    task.terminationError = task.termination === 'stopped' ? null : 'Supervisor did not confirm an empty process job';
+    task.status = task.termination === 'stopped' ? status : 'failed';
     task.sentinelContent = sentinel;
     task.outputContent = output;
     task.error = error;
     task.completedAt = Date.now();
     task.stdout = stripAnsi(task.stdout);
 
-    this.cleanup(taskId);
+    if (task.termination === 'stopped') {
+      this.processes.delete(taskId);
+      this.closed.delete(taskId);
+      try { await this.reviews.get(taskId)?.cleanup(); }
+      catch (cleanupError) {
+        task.error = [task.error, `Review artifact cleanup failed: ${String(cleanupError)}`].filter(Boolean).join('; ');
+        process.stderr.write(`[WARN] ${task.error}\n`);
+      }
+      this.reviews.delete(taskId);
+      this.streams.delete(taskId);
+    }
+    process.stderr.write(`[${task.terminationError ? 'ERROR' : 'INFO'}] Task ${taskId}: ${task.status}; termination=${task.termination}\n`);
 
     const resolver = this.waitResolvers.get(taskId);
     if (resolver) {
@@ -379,17 +482,6 @@ export class EngineManager {
   }
 
   private cleanup(taskId: string): void {
-    const proc = this.processes.get(taskId);
-    if (proc && !proc.killed) {
-      try {
-        // On Windows, kill() sends TerminateProcess (hard kill)
-        proc.kill();
-      } catch {
-        // Already exited
-      }
-    }
-    this.processes.delete(taskId);
-
     const watcher = this.watchers.get(taskId);
     if (watcher) {
       try { watcher.close(); } catch { /* */ }

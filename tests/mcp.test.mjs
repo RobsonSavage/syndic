@@ -20,6 +20,9 @@ test('MCP advertises optional overrides and forwards effort to the engine', asyn
     assert.equal(schema.properties.reasoning_effort.type, 'string');
     assert.equal(schema.required.includes('reasoning_effort'), false);
     assert.equal(schema.required.includes('model'), false);
+    assert.deepEqual(schema.properties.mode.enum, ['default', 'review']);
+    assert.ok(schema.properties.review_inputs);
+    assert.ok(schema.properties.review_roslyn);
     assert.match(schema.properties.model.description, /For Gemini, do not set this unless the user explicitly requests a model/);
     const result = await client.callTool({
       name: 'syndic_run',
@@ -27,6 +30,12 @@ test('MCP advertises optional overrides and forwards effort to the engine', asyn
     });
     assert.equal(result.isError, true);
     assert.match(result.content[0].text, /reasoning_effort is not supported for gemini/);
+    const rejected = await client.callTool({ name: 'syndic_run', arguments: {
+      engine: 'gemini', prompt: 'Inspect the task', mode: 'review',
+    } });
+    assert.equal(rejected.isError, true);
+    const cancel = await client.callTool({ name: 'syndic_cancel', arguments: { task_id: 'unknown-test-task' } });
+    assert.equal(JSON.parse(cancel.content[0].text).accepted, false);
   } finally {
     await client.close();
   }
