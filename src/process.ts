@@ -1,8 +1,7 @@
-import { spawn, execFile, type ChildProcess } from 'node:child_process';
-import { readFile, writeFile } from 'node:fs/promises';
+import { spawn, type ChildProcess } from 'node:child_process';
+import { readFile, writeFile, stat } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-import { dirname, isAbsolute, resolve } from 'node:path';
-import { promisify } from 'node:util';
+import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 
 export interface ProcessReceipt {
   pid: number;
@@ -25,8 +24,16 @@ export function quoteArgument(value: string): string {
 }
 
 async function nativeCommandLine(command: string, args: string[]): Promise<string> {
-  const candidates = isAbsolute(command) ? [command] :
-    (await promisify(execFile)('where.exe', [command], { windowsHide: true })).stdout.trim().split(/\r?\n/);
+  // MCP clients commonly omit PATHEXT. Resolve supported file types explicitly,
+  // without where.exe's environment-dependent extension expansion.
+  const paths = isAbsolute(command) ? [command] : (process.env.PATH ?? '').split(delimiter)
+    .filter(Boolean).flatMap(dir => /\.(exe|cmd)$/i.test(command) ? [join(dir, command)] :
+      [join(dir, `${command}.exe`), join(dir, `${command}.cmd`)]);
+  const candidates: string[] = [];
+  for (const path of paths) {
+    try { if ((await stat(path)).isFile()) candidates.push(path); } catch { }
+  }
+  if (!candidates.length) throw new Error(`CLI not found on PATH: ${command}`);
   const executable = candidates.find(path => /\.exe$/i.test(path));
   if (executable) return [executable, ...args].map(quoteArgument).join(' ');
   const shim = candidates.find(path => /\.cmd$/i.test(path));
@@ -35,7 +42,7 @@ async function nativeCommandLine(command: string, args: string[]): Promise<strin
     const entry = /"%dp0%[\\/]([^"\r\n]+\.js)"\s+%\*/.exec(content)?.[1];
     if (entry) return [process.execPath, resolve(dirname(shim), entry), ...args].map(quoteArgument).join(' ');
   }
-  return commandLine(command, args);
+  return commandLine(candidates[0], args);
 }
 
 export interface ManagedProcess {

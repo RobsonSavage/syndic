@@ -12,7 +12,7 @@ test('cmd arguments reject expansion and quote breakout', () => {
   assert.match(commandLine('node', ['a & b']), /"a & b"/);
 });
 
-for (const ending of ['stop', 'disconnect', 'crash', 'exit']) {
+for (const ending of ['stop', 'disconnect', 'crash', 'exit', 'no-pathext']) {
 test(`job owns grandchildren on ${ending}`, { skip: process.platform !== 'win32' }, async () => {
   const cwd = await mkdtemp(join(process.cwd(), '.syndic-process-'));
   let managed;
@@ -20,7 +20,14 @@ test(`job owns grandchildren on ${ending}`, { skip: process.platform !== 'win32'
     await writeFile(join(cwd, 'child.cjs'), 'require("node:fs").writeFileSync("child.pid",String(process.pid)); setInterval(()=>{},1000);');
     await writeFile(join(cwd, 'parent.cjs'), 'require("node:child_process").spawn(process.execPath,["child.cjs"],{stdio:"ignore"}); ' +
       (ending === 'exit' ? 'setTimeout(()=>process.exit(0),1000);' : 'setInterval(()=>{},1000);'));
-    managed = await launchProcess(process.execPath, ['parent.cjs'], cwd, process.env, join(cwd, 'launch.json'));
+    const originalPathExt = process.env.PATHEXT;
+    try {
+      if (ending === 'no-pathext') delete process.env.PATHEXT;
+      managed = await launchProcess(ending === 'no-pathext' ? 'node' : process.execPath,
+        ['parent.cjs'], cwd, process.env, join(cwd, 'launch.json'));
+    } finally {
+      if (originalPathExt !== undefined) process.env.PATHEXT = originalPathExt;
+    }
     let stderr = '';
     managed.proc.stderr.on('data', chunk => { stderr += chunk; });
     const closed = once(managed.proc, 'close');
@@ -32,7 +39,7 @@ test(`job owns grandchildren on ${ending}`, { skip: process.platform !== 'win32'
     }
     assert.ok(pid, stderr);
     process.kill(pid, 0);
-    if (ending === 'stop') managed.stop();
+    if (ending === 'stop' || ending === 'no-pathext') managed.stop();
     if (ending === 'disconnect') managed.proc.stdin.end();
     if (ending === 'crash') managed.proc.kill();
     await closed;
