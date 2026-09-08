@@ -22,7 +22,7 @@ Install the CLI engines you intend to use:
 | Codex CLI | `npm install -g @openai/codex` |
 | Gemini CLI | `npm install -g @google/gemini-cli` |
 | Claude Code | `npm install -g @anthropic-ai/claude-code` |
-| OpenCode | `npm install -g @anthropic-ai/opencode` |
+| OpenCode | `npm install -g opencode-ai` |
 
 Node.js >= 18, Windows, and PowerShell 7 (`pwsh.exe` on PATH) are required.
 
