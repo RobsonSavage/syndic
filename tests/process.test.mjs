@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
+import { delimiter, join } from 'node:path';
 import { once } from 'node:events';
 import { test } from 'node:test';
-import { launchProcess, commandLine } from '../dist/process.js';
+import { launchProcess, commandLine, nativeCommandLine, quoteArgument } from '../dist/process.js';
 
 test('cmd arguments reject expansion and quote breakout', () => {
   for (const value of ['%PATH%', 'a"b', 'a\nb', '!PATH!']) {
@@ -56,3 +56,50 @@ test(`job owns grandchildren on ${ending}`, { skip: process.platform !== 'win32'
   }
 });
 }
+
+test('launcher resolution follows PATH order, not extension preference', async () => {
+  const root = await mkdtemp(join(process.cwd(), '.syndic-path-'));
+  const first = join(root, 'first');
+  const second = join(root, 'second');
+  const originalPath = process.env.PATH;
+  try {
+    await mkdir(first);
+    await mkdir(second);
+    // npm installs a .cmd with no .exe beside it; the stale copy is an .exe.
+    await writeFile(join(first, 'cli.cmd'), '@ECHO off\r\n"%dp0%\\node_modules\\cli-ai\\bin\\cli.exe"   %*\r\n');
+    await writeFile(join(second, 'cli.exe'), 'stale');
+
+    process.env.PATH = [first, second].join(delimiter);
+    const early = await nativeCommandLine('cli', ['run']);
+    assert.match(early, /cli\.cmd/, 'the .cmd earlier on PATH must win');
+    assert.doesNotMatch(early, /cli\.exe/);
+
+    process.env.PATH = [second, first].join(delimiter);
+    const late = await nativeCommandLine('cli', ['run']);
+    assert.match(late, /cli\.exe/, 'the .exe earlier on PATH must win');
+    assert.doesNotMatch(late, /cli\.cmd/);
+
+    // Within one directory PATHEXT order still puts .exe ahead of .cmd.
+    await writeFile(join(first, 'cli.exe'), 'local');
+    process.env.PATH = [first, second].join(delimiter);
+    assert.match(await nativeCommandLine('cli', ['run']), /first.cli\.exe/);
+  } finally {
+    if (originalPath !== undefined) process.env.PATH = originalPath;
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test('a node shim on PATH is still unwrapped to its entry script', async () => {
+  const root = await mkdtemp(join(process.cwd(), '.syndic-shim-'));
+  const originalPath = process.env.PATH;
+  try {
+    await writeFile(join(root, 'tool.cmd'), '@ECHO off\r\n"%dp0%\\node_modules\\tool\\bin\\tool.js"   %*\r\n');
+    process.env.PATH = root;
+    const line = await nativeCommandLine('tool', ['go']);
+    assert.match(line, /node_modules.tool.bin.tool\.js/);
+    assert.ok(line.startsWith(quoteArgument(process.execPath)), line);
+  } finally {
+    if (originalPath !== undefined) process.env.PATH = originalPath;
+    await rm(root, { recursive: true, force: true });
+  }
+});
