@@ -400,18 +400,10 @@ export class EngineManager {
       // No sentinel file
     }
 
-    // Fallback: use process exit code
-    if (code === 0) {
-      await this.completeTask(taskId, 'completed', null, null, null);
-    } else {
-      await this.completeTask(
-        taskId,
-        'failed',
-        null,
-        null,
-        `Process exited with code ${code}. No sentinel file written.`,
-      );
-    }
+    // A clean CLI exit does not establish completion of the requested task.
+    await this.completeTask(taskId, 'failed', null, await this.readOutputFile(syndicDir, taskId),
+      `Process exited with code ${code} without a readable completion sentinel. ` +
+      'For Claude/Codex critiques or consultations that prohibit file writes, use mode=review; syndic captures the final response.');
   }
 
   // -----------------------------------------------------------------------

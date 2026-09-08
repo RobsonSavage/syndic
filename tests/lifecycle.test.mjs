@@ -58,3 +58,26 @@ test('timeout and successful sentinel completion both stop the process job', asy
     assert.equal(task.outputContent, 'Review result');
   } finally { await manager.shutdown(); await rm(cwd, { recursive: true, force: true }); }
 });
+
+test('zero exit without completion artifacts fails and retains response diagnostics', async () => {
+  const cwd = await mkdtemp(join(process.cwd(), '.syndic-outcome-'));
+  const proc = new EventEmitter();
+  proc.stdout = new EventEmitter(); proc.stderr = new EventEmitter();
+  const manager = new EngineManager(async () => ({ proc,
+    receipt: async () => ({ pid: 123, termination: 'stopped', exit_code: 0 }),
+    stop: () => {},
+  }));
+  try {
+    const completion = manager.run('claude', 'Review without writing any files', cwd, 10000, true);
+    while (proc.listenerCount('close') === 0) await new Promise(resolve => setTimeout(resolve, 5));
+    proc.stdout.emit('data', Buffer.from('File writes denied; findings returned as response text.'));
+    proc.emit('close', 0);
+    const task = await completion;
+    assert.equal(task.status, 'failed');
+    assert.equal(task.termination, 'stopped');
+    assert.match(task.error, /completion sentinel/i);
+    assert.match(task.error, /mode=review/);
+    assert.match(task.stdout, /File writes denied/);
+    assert.equal(task.outputContent, null);
+  } finally { await manager.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});

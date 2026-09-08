@@ -232,8 +232,8 @@ status: completed
 
 If the engine hits an unrecoverable error it uses `status: failed` in the sentinel.
 Only the exact single status field in frontmatter is parsed. Partial/malformed
-sentinels or a missing paired output cannot certify completion. Default mode still
-falls back to process exit code when no sentinel exists; consumers must check that
+sentinels or a missing paired output cannot certify completion. Default mode fails
+when no readable sentinel exists, even after exit code zero; consumers must check that
 usable output exists. Review mode requires a captured final response.
 
 ## Working directory and file isolation
