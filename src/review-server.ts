@@ -20,7 +20,7 @@ const server = new Server({ name: 'syndic-review', version: '1' }, { capabilitie
 const reply = (value: unknown) => ({ content: [{ type: 'text' as const, text: typeof value === 'string' ? value : JSON.stringify(value) }] });
 let roslyn: Client | undefined;
 let semantic: Tool[] = [];
-let roslynError = 'Roslyn launcher not supplied';
+let roslynError = cfg.roslyn_error ?? 'Roslyn launcher not supplied';
 
 function solutionPath(result: unknown): string | undefined {
   const blocks = (result as { content?: Array<{ text?: string }> }).content;
@@ -50,7 +50,7 @@ if (cfg.roslyn) {
     transport.stderr?.on('data', () => { /* upstream diagnostics never become reviewer memory/context */ });
     await roslyn.connect(transport);
     const selection = await roslyn.callTool({ name: 'set_solution_root', arguments: { rootPath: root, warmUp: false } });
-    if (selection.isError) throw new Error('Roslyn selection failed');
+    if (selection.isError) throw new Error(`Roslyn selection failed: ${JSON.stringify(selection.content)}`);
     await validateWorkspace();
     semantic = (await roslyn.listTools()).tools.filter(tool => SEMANTIC_TOOLS.has(tool.name));
     roslynError = '';

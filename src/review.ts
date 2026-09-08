@@ -1,4 +1,4 @@
-import { mkdtemp, writeFile, readFile, rm, realpath } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, realpath, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -7,6 +7,26 @@ import type { EngineType, Task } from './types.js';
 export interface ReviewOptions {
   inputs: string[];
   roslyn?: { command: string; args?: string[] };
+}
+
+// Resolve only the trusted per-user installation, never an executable in the
+// reviewed repository or on its PATH. Roslyn owns solution discovery.
+export async function resolveReviewRoslyn(override: ReviewOptions['roslyn'],
+  env: NodeJS.ProcessEnv = process.env): Promise<{ roslyn?: ReviewOptions['roslyn']; error?: string }> {
+  if (override) {
+    if (!isAbsolute(override.command) || !/\.exe$/i.test(override.command)) {
+      throw new Error('review_roslyn.command must be the absolute trusted executable path');
+    }
+    return { roslyn: override };
+  }
+  if (!env.LOCALAPPDATA || !isAbsolute(env.LOCALAPPDATA)) return { error: 'Automatic Roslyn resolution failed: LOCALAPPDATA must be an absolute path. Install Roslyn or supply review_roslyn.' };
+  const command = join(env.LOCALAPPDATA, 'RoslynMcp', 'RoslynMcp.Server.exe');
+  try {
+    if (!(await stat(command)).isFile()) throw new Error('not a file');
+    return { roslyn: { command, args: [] } };
+  } catch (error) {
+    return { error: `Automatic Roslyn resolution failed at ${command}: ${error instanceof Error ? error.message : String(error)}. Install Roslyn or supply review_roslyn.` };
+  }
 }
 export interface ReviewLaunch {
   cwd: string;
@@ -28,9 +48,7 @@ export function reviewEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
 export async function prepareReview(engine: EngineType, root: string, prompt: string,
   options: ReviewOptions): Promise<ReviewLaunch> {
   if (engine !== 'claude' && engine !== 'codex') throw new Error('Review mode supports Claude and Codex only');
-  if (options.roslyn && (!isAbsolute(options.roslyn.command) || !/\.exe$/i.test(options.roslyn.command))) {
-    throw new Error('review_roslyn.command must be the absolute trusted executable path');
-  }
+  const roslyn = await resolveReviewRoslyn(options.roslyn);
   const inputs = await Promise.all(options.inputs.map(path => realpath(path)));
   const cwd = await mkdtemp(join(tmpdir(), 'syndic-review-'));
   const cleanup = async () => {
@@ -48,7 +66,8 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
       'Return the complete Markdown report as your final response. Syndic saves it. Do not write files.',
     ].join('\n');
     await writeFile(promptPath, prompt + '\n\n' + evidenceProtocol + '\n', 'utf8');
-    await writeFile(join(cwd, 'access.json'), JSON.stringify({ root, inputs: [...inputs, promptPath], roslyn: options.roslyn }), 'utf8');
+    await writeFile(join(cwd, 'access.json'), JSON.stringify({ root, inputs: [...inputs, promptPath],
+      roslyn: roslyn.roslyn, roslyn_error: roslyn.error }), 'utf8');
     const server = { command: process.execPath, args: [fileURLToPath(new URL('./review-server.js', import.meta.url)), join(cwd, 'access.json')] };
     const env = { ...reviewEnvironment(process.env), MSYS2_ARG_CONV_EXCL: '*', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' };
     const boot = `Call syndic_review review_status for the supplied-input inventory and read semantics, then use read_file to read ${promptPath.replaceAll('\\', '/')} and perform that review. Return the report in your final response`;

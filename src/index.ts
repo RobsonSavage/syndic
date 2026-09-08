@@ -86,7 +86,7 @@ server.tool(
     mode: z.enum(['default', 'review']).optional().describe('review: controlled read/semantic MCP tools, no shell or report-write tools; syndic captures the final report. Claude/Codex only.'),
     review_inputs: z.array(z.string()).optional().describe('Absolute paths to the factual packet/procedure/evidence the restricted reviewer may read, in addition to tracked source.'),
     review_roslyn: z.object({ command: z.string(), args: z.array(z.string()).optional() }).optional()
-      .describe('Trusted Roslyn executable and arguments from host configuration. Only an allowlist of semantic tools is exposed; no memory or mutations.'),
+      .describe('Optional trusted Roslyn launcher override. By default review mode uses the per-user RoslynMcp installation and asks Roslyn to select the review root. Only semantic tools are exposed; no memory or mutations.'),
   },
   async ({ engine, prompt, cwd, timeout_ms, wait, yolo, model, reasoning_effort, mode, review_inputs, review_roslyn }) => {
     try {

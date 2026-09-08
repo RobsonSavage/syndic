@@ -83,7 +83,7 @@ Spawn an external AI CLI engine to execute a task.
 | `reasoning_effort` | `string` | No | Codex or Claude Code reasoning effort, or OpenCode model variant, supported by the selected model/provider. Omit to use the CLI default. Rejected for Gemini. |
 | `mode` | `"default" \| "review"` | No | `review` restricts Claude/Codex to source/semantic inspection and captures their final report. Requires `yolo: false`. |
 | `review_inputs` | `string[]` | No | Absolute paths to packet/procedure/evidence files the reviewer may read, in addition to tracked repository source. |
-| `review_roslyn` | `{command: string, args?: string[]}` | No | Trusted absolute Roslyn executable and arguments. Exposes selected semantic tools, without memory or mutations. Review mode only. |
+| `review_roslyn` | `{command: string, args?: string[]}` | No | Override the automatic per-user Roslyn installation with a trusted absolute executable and arguments. Review mode only. |
 
 For Codex with Astra at max effort, pass `engine="codex", model="gpt-6-astra", reasoning_effort="max"` to `syndic_run` along with the task prompt. These settings override the CLI defaults for that invocation. OpenCode receives the same fields through `--model` and `--variant`; use its provider/model identifier and a supported variant.
 
@@ -187,7 +187,13 @@ The reviewer returns Markdown in its final response; syndic writes the output an
 sentinel after the CLI exits. The coordinator validates coverage and saves/publishes
 the report. A transport success is not evidence of a complete review.
 
-For .NET, supply `review_roslyn` from trusted host configuration. The broker selects
+Review mode automatically uses `%LOCALAPPDATA%/RoslynMcp/RoslynMcp.Server.exe`,
+the standard per-user installation. Supply `review_roslyn` to override that launcher
+for a custom installation. Executables are never discovered from the reviewed
+repository or its PATH. Roslyn owns solution discovery: a repository without a
+supported solution gets no semantic tools. Missing installations and selection or
+startup failures are reported in `review_status.roslyn_error`.
+The broker selects
 the source root with `warmUp=false` and validates solution containment before
 semantic queries. Each broker owns its own stdio server; same-solution instances
 can share Roslyn's on-disk cache/database. Errors become explicit coverage gaps.

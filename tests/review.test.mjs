@@ -4,9 +4,26 @@ import { mkdtemp, writeFile, readFile, realpath, mkdir, rm } from 'node:fs/promi
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { ReviewAccess } from '../dist/review-access.js';
-import { prepareReview, reviewEnvironment } from '../dist/review.js';
+import { prepareReview, resolveReviewRoslyn, reviewEnvironment } from '../dist/review.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+
+test('automatic Roslyn resolution uses the per-user install and preserves explicit overrides', async () => {
+  const cwd = await mkdtemp(join(process.cwd(), '.syndic-access-'));
+  try {
+    const env = { LOCALAPPDATA: cwd };
+    assert.match((await resolveReviewRoslyn(undefined, env)).error, /Install Roslyn/);
+    assert.match((await resolveReviewRoslyn(undefined, {})).error, /absolute path/);
+    assert.match((await resolveReviewRoslyn(undefined, { LOCALAPPDATA: '.' })).error, /absolute path/);
+    await mkdir(join(cwd, 'RoslynMcp'));
+    const command = join(cwd, 'RoslynMcp', 'RoslynMcp.Server.exe');
+    await writeFile(command, 'fixture - never executed');
+    assert.deepEqual(await resolveReviewRoslyn(undefined, env), { roslyn: { command, args: [] } });
+    const override = { command: join(cwd, 'custom.exe'), args: ['--custom'] };
+    assert.deepEqual(await resolveReviewRoslyn(override, env), { roslyn: override });
+    await assert.rejects(resolveReviewRoslyn({ command: 'relative.exe' }, env), /absolute trusted/);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
 
 test('review environment removes unrelated credentials and startup injection', () => {
   const env = reviewEnvironment({ PATH: 'path', GH_TOKEN: 'canary', NODE_OPTIONS: 'canary',
