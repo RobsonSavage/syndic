@@ -23,7 +23,7 @@ export function quoteArgument(value: string): string {
   return '"' + value.replace(/(\\*)"/g, '$1$1\\"').replace(/(\\+)$/, '$1$1') + '"';
 }
 
-async function nativeCommandLine(command: string, args: string[]): Promise<string> {
+export async function nativeCommandLine(command: string, args: string[]): Promise<string> {
   // MCP clients commonly omit PATHEXT. Resolve supported file types explicitly,
   // without where.exe's environment-dependent extension expansion.
   const paths = isAbsolute(command) ? [command] : (process.env.PATH ?? '').split(delimiter)
@@ -34,15 +34,20 @@ async function nativeCommandLine(command: string, args: string[]): Promise<strin
     try { if ((await stat(path)).isFile()) candidates.push(path); } catch { }
   }
   if (!candidates.length) throw new Error(`CLI not found on PATH: ${command}`);
-  const executable = candidates.find(path => /\.exe$/i.test(path));
-  if (executable) return [executable, ...args].map(quoteArgument).join(' ');
-  const shim = candidates.find(path => /\.cmd$/i.test(path));
-  if (shim) {
-    const content = await readFile(shim, 'utf8');
+  // Candidates are already in Windows resolution order: directories in PATH
+  // order, and .exe before .cmd inside each directory. Take the first and
+  // dispatch on what it is. Preferring an .exe found anywhere in the list would
+  // let a stale shim in a later directory beat the .cmd the shell itself runs -
+  // npm installs a .cmd with no .exe beside it, so a leftover <cli>.exe further
+  // down PATH silently captured every launch of that CLI.
+  const winner = candidates[0];
+  if (/\.exe$/i.test(winner)) return [winner, ...args].map(quoteArgument).join(' ');
+  if (/\.cmd$/i.test(winner)) {
+    const content = await readFile(winner, 'utf8');
     const entry = /"%dp0%[\\/]([^"\r\n]+\.js)"\s+%\*/.exec(content)?.[1];
-    if (entry) return [process.execPath, resolve(dirname(shim), entry), ...args].map(quoteArgument).join(' ');
+    if (entry) return [process.execPath, resolve(dirname(winner), entry), ...args].map(quoteArgument).join(' ');
   }
-  return commandLine(candidates[0], args);
+  return commandLine(winner, args);
 }
 
 export interface ManagedProcess {
