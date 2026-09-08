@@ -1,8 +1,11 @@
-import { mkdtemp, writeFile, readFile, rm, realpath, stat } from 'node:fs/promises';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import type { Tool } from '@modelcontextprotocol/sdk/types.js';
+import { mkdtemp, writeFile, readFile, rename, rm, realpath, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { EngineType, Task } from './types.js';
+import { SEMANTIC_TOOLS, type EngineType, type Task } from './types.js';
 
 export interface ReviewOptions {
   inputs: string[];
@@ -40,6 +43,60 @@ export async function resolveReviewRoslyn(override: ReviewOptions['roslyn'],
     return { error: `Automatic Roslyn resolution failed at ${command}: ${error instanceof Error ? error.message : String(error)}. Install Roslyn or supply review_roslyn.` };
   }
 }
+// Codex fixes a session's tool inventory from the first tools/list answer and
+// ignores a later tools/list_changed, so the broker has to name the semantic
+// tools before Roslyn has opened anything. Their descriptions belong to the
+// installed Roslyn, so they are read from it once per build and kept here.
+const TOOL_CACHE = join(tmpdir(), 'syndic-roslyn-tools.json');
+const TOOL_LIST_MS = 30_000;
+
+async function readToolCache(stamp: string): Promise<Tool[] | undefined> {
+  try {
+    const cache = JSON.parse(await readFile(TOOL_CACHE, 'utf8'));
+    if (cache.stamp === stamp && Array.isArray(cache.tools)) return cache.tools;
+  } catch { /* absent or unreadable: read the descriptions from Roslyn again */ }
+}
+
+// Only the descriptions are read here. Selecting the solution is the slow part
+// and stays in the broker, where a review can wait for it.
+export async function semanticTools(roslyn: NonNullable<ReviewOptions['roslyn']>): Promise<Tool[]> {
+  let stamp: string;
+  try {
+    const exe = await stat(roslyn.command);
+    stamp = `${roslyn.command}:${exe.mtimeMs}:${exe.size}`;
+  } catch { return []; }
+  const cached = await readToolCache(stamp);
+  if (cached) return cached;
+  const client = new Client({ name: 'syndic-review-tools', version: '1' });
+  let expiry: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const listing = (async () => {
+      // Roslyn selects a solution from its working directory at startup. This
+      // process only reads descriptions, so it is started where there is none.
+      await client.connect(new StdioClientTransport({ command: roslyn.command, args: roslyn.args ?? [],
+        cwd: tmpdir(), env: Object.fromEntries(Object.entries(reviewEnvironment(process.env))
+          .filter((pair): pair is [string, string] => typeof pair[1] === 'string')), stderr: 'pipe' }));
+      return (await client.listTools()).tools.filter(tool => SEMANTIC_TOOLS.has(tool.name));
+    })();
+    listing.catch(() => { });
+    const tools = await Promise.race([listing, new Promise<never>((_, reject) => {
+      expiry = setTimeout(() => reject(new Error('Roslyn did not list its tools in time')), TOOL_LIST_MS);
+    })]);
+    // Concurrent reviews write the same descriptions; renaming keeps every
+    // reader on one complete file.
+    const scratch = `${TOOL_CACHE}.${process.pid}`;
+    await writeFile(scratch, JSON.stringify({ stamp, tools }), 'utf8');
+    await rename(scratch, TOOL_CACHE);
+    return tools;
+  } catch {
+    // A reviewer with no semantic tools is degraded, not broken.
+    return [];
+  } finally {
+    clearTimeout(expiry);
+    await client.close().catch(() => { });
+  }
+}
+
 export interface ReviewLaunch {
   cwd: string;
   args: string[];
@@ -62,6 +119,7 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
   options: ReviewOptions, auditPath?: string): Promise<ReviewLaunch> {
   if (engine !== 'claude' && engine !== 'codex') throw new Error('Review mode supports Claude and Codex only');
   const roslyn = await resolveReviewRoslyn(options.roslyn);
+  const semantic = roslyn.roslyn ? await semanticTools(roslyn.roslyn) : [];
   const inputs = await Promise.all(options.inputs.map(path => realpath(path)));
   const cwd = await mkdtemp(join(tmpdir(), 'syndic-review-'));
   const cleanup = async () => {
@@ -86,7 +144,7 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
     const promptLines = taskPrompt.split(/\r?\n/).length;
     const writeAccess = () => writeFile(join(cwd, 'access.json'), JSON.stringify({ root,
       inputs: [...inputs, promptPath], audit_path: auditFile, attempt,
-      roslyn: roslyn.roslyn, roslyn_error: roslyn.error }), 'utf8');
+      roslyn: roslyn.roslyn, roslyn_error: roslyn.error, semantic_tools: semantic }), 'utf8');
     await writeAccess();
     const server = { command: process.execPath, args: [fileURLToPath(new URL('./review-server.js', import.meta.url)), join(cwd, 'access.json')] };
     const env: NodeJS.ProcessEnv = { ...reviewEnvironment(process.env), MSYS2_ARG_CONV_EXCL: '*',
@@ -94,7 +152,8 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
     const boot = `Call syndic_review review_status for the supplied-input inventory and read semantics, then use read_file to read ${promptPath.replaceAll('\\', '/')} and perform that review. Return the report in your final response`;
     let args: string[];
     if (engine === 'claude') {
-      // Cold Roslyn solution loading completes before the broker accepts MCP connections.
+      // Solution loading runs behind the handshake, so this covers only a slow
+      // broker start on a loaded machine.
       env.MCP_TIMEOUT = '240000';
       await writeFile(join(cwd, 'mcp.json'), JSON.stringify({ mcpServers: { syndic_review: server } }), 'utf8');
       await writeFile(join(cwd, 'settings.json'), JSON.stringify({ disableAllHooks: true, autoMemoryEnabled: false }), 'utf8');

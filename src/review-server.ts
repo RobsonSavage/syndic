@@ -6,17 +6,15 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolRequest, ty
 import { appendFile, readFile, realpath } from 'node:fs/promises';
 import { isAbsolute, resolve } from 'node:path';
 import { ReviewAccess, inside } from './review-access.js';
+import { SEMANTIC_TOOLS } from './types.js';
 
-// Deliberately excludes memory, graph, configuration, execution and mutation tools.
-const SEMANTIC_TOOLS = new Set(['get_workspace_status', 'find_references', 'find_callers',
-  'find_callees', 'find_definition', 'find_implementations', 'get_method_body', 'get_type_members',
-  'get_file_outline', 'understand_method', 'understand_type', 'analyze_data_flow', 'get_errors', 'text_search']);
-
-// This broker answers no MCP request until Roslyn has finished selecting the
-// solution, and a broker that misses the launcher's four-minute startup
-// allowance is dropped, leaving the reviewer with no tools at all. Bound the
-// cold load well inside that allowance and degrade to the file tools instead.
-const ROSLYN_STARTUP_MS = 180_000;
+// Codex asks for the tool list milliseconds after the transport connects and
+// drops a server that answers either request late; mcp_servers.startup_timeout_sec
+// does not extend that window, which is shorter than any real solution load.
+// So the broker connects first and selects the solution in the background.
+// Readiness is awaited inside the first tool call instead of the handshake,
+// which is what this bound has to fit: a reviewer's per-tool timeout.
+const ROSLYN_STARTUP_MS = 110_000;
 
 const cfg = JSON.parse(await readFile(process.argv[2], 'utf8'));
 if (cfg.audit_path !== undefined && (typeof cfg.audit_path !== 'string' || !isAbsolute(cfg.audit_path) ||
@@ -26,11 +24,19 @@ if (cfg.audit_path !== undefined && (typeof cfg.audit_path !== 'string' || !isAb
 const root = await realpath(cfg.root);
 const access = new ReviewAccess(root);
 await access.initialize(cfg.inputs);
-const server = new Server({ name: 'syndic-review', version: '1' }, { capabilities: { tools: {} } });
+const server = new Server({ name: 'syndic-review', version: '1' }, { capabilities: { tools: { listChanged: true } } });
 const reply = (value: unknown) => ({ content: [{ type: 'text' as const, text: typeof value === 'string' ? value : JSON.stringify(value) }] });
 let roslyn: Client | undefined;
-let semantic: Tool[] = [];
+// Named before the workspace is open, so the reviewer's fixed tool inventory
+// includes them. Every call waits on the attach that makes them answerable.
+// Roslyn selects the shallowest solution tracked under the root, so a root
+// without one is told nothing it cannot deliver.
+const candidate = access.list().some(path => /\.slnx?$/i.test(path));
+let semantic: Tool[] = candidate
+  ? (cfg.semantic_tools ?? []).filter((tool: Tool) => SEMANTIC_TOOLS.has(tool.name)) : [];
 let roslynError = cfg.roslyn_error ?? 'Roslyn launcher not supplied';
+let connect = () => { };
+const connected = new Promise<void>(resolve => { connect = resolve; });
 
 function solutionPath(result: unknown): string | undefined {
   const blocks = (result as { content?: Array<{ text?: string }> }).content;
@@ -51,8 +57,12 @@ async function validateWorkspace(client: Client): Promise<void> {
   }
 }
 
-if (cfg.roslyn) {
+// Runs beside the handshake. Every tool call waits on it, so a caller never
+// sees a half-attached workspace, and nothing here delays the tool list.
+let attaching: Client | undefined;
+async function attachRoslyn(): Promise<void> {
   const client = new Client({ name: 'syndic-review', version: '1' });
+  attaching = client;
   let expiry: ReturnType<typeof setTimeout> | undefined;
   try {
     const transport = new StdioClientTransport({ command: cfg.roslyn.command, args: cfg.roslyn.args ?? [],
@@ -80,27 +90,35 @@ if (cfg.roslyn) {
     roslynError = '';
   } catch (error) {
     roslynError = error instanceof Error ? error.message : String(error);
+    semantic = [];
     await client.close().catch(() => { });
   } finally {
     clearTimeout(expiry);
+    attaching = undefined;
+    // The advertised list was a prediction. Announce the correction for a
+    // client that re-reads it; the rest learn from a call that reports why.
+    await connected;
+    server.sendToolListChanged();
   }
 }
+const attached = cfg.roslyn ? attachRoslyn() : Promise.resolve();
 
-const tools: Tool[] = [
+const fileTools: Tool[] = [
   { name: 'review_status', description: 'Repository HEAD/status, complete supplied-input inventory, read semantics and semantic-tool availability. Check before reviewing.', inputSchema: { type: 'object', properties: {} } },
   { name: 'list_files', description: 'List tracked source paths by optional prefix with pagination; total includes unread pages.', inputSchema: { type: 'object', properties: { prefix: { type: 'string' }, offset: { type: 'integer' }, limit: { type: 'integer' } } } },
   { name: 'read_file', description: 'Read current disk contents of a tracked working-tree file or supplied input, with provenance and 1-based lines. This does not read committed HEAD or the index. Supplied paths are listed by review_status.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'integer' }, limit: { type: 'integer' } }, required: ['path'] } },
   { name: 'git_diff', description: 'Read a diff between full commit SHAs, with external diff and textconv disabled.', inputSchema: { type: 'object', properties: { base: { type: 'string' }, head: { type: 'string' } }, required: ['base', 'head'] } },
-  ...semantic,
 ];
-server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.map(tool => ({
+server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: [...fileTools, ...semantic].map(tool => ({
   ...tool, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 })) }));
 async function callTool(request: CallToolRequest) {
   try {
     const args = request.params.arguments ?? {};
     switch (request.params.name) {
-      case 'review_status': return reply({ root, head: (await access.git(['rev-parse', 'HEAD'])).trim(),
+      // The evidence protocol calls this first, so the wait for the workspace
+      // lands here and the reported roslyn_error is a settled answer.
+      case 'review_status': await attached; return reply({ root, head: (await access.git(['rev-parse', 'HEAD'])).trim(),
         status: await access.git(['status', '--porcelain']),
         read_semantics: 'read_file returns current disk contents, not HEAD or index blobs. HEAD is repository metadata only. Reads are not an immutable snapshot. git_diff compares committed revisions only.',
         supplied_inputs: access.listInputs(),
@@ -117,7 +135,12 @@ async function callTool(request: CallToolRequest) {
       case 'read_file': return reply(await access.read(String(args.path), args.offset as number | undefined, args.limit as number | undefined));
       case 'git_diff': return reply(await access.diff(String(args.base), String(args.head)));
       default: {
-        if (!roslyn || !semantic.some(tool => tool.name === request.params.name)) throw new Error('Tool is not available in review mode');
+        // A reviewer that acted on the announcement can call these before the
+        // announcement's own round trip settles here.
+        await attached;
+        // A tool named at startup can still be unreachable, so say which it is.
+        if (!roslyn) throw new Error(roslynError || 'Roslyn is not available in review mode');
+        if (!semantic.some(tool => tool.name === request.params.name)) throw new Error('Tool is not available in review mode');
         for (const [key, value] of Object.entries(args)) {
           if (/path/i.test(key) && typeof value === 'string' && !inside(root, await realpath(resolve(root, value)))) {
             throw new Error('Semantic path outside the review root');
@@ -159,4 +182,6 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
   }
 });
 await server.connect(new StdioServerTransport());
-process.stdin.on('end', () => { void roslyn?.close(); });
+connect();
+// An attach still in flight owns the only handle on its Roslyn process.
+process.stdin.on('end', () => { void roslyn?.close(); void attaching?.close(); });

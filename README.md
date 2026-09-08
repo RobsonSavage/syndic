@@ -213,9 +213,11 @@ for a custom installation. Executables are never discovered from the reviewed
 repository or its PATH. Roslyn owns solution discovery: a repository without a
 supported solution gets no semantic tools. Missing installations and selection or
 startup failures are reported in `review_status.roslyn_error`.
-The broker selects
-the source root with `warmUp=false` and validates solution containment before
-semantic queries. Each broker owns its own stdio server; same-solution instances
+A CLI fixes its tool inventory when it starts and will not wait for a solution to
+open, so the semantic tool names are published up front, read once per Roslyn build
+from the installation and cached in the temp directory. The broker selects
+the source root with `warmUp=false` in the background and validates solution
+containment before semantic queries; the first tool call waits for that selection. Each broker owns its own stdio server; same-solution instances
 can share Roslyn's on-disk cache/database. Errors become explicit coverage gaps.
 Arbitrary builds/tests run separately in the coordinator's approved environment.
 

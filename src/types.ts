@@ -85,6 +85,14 @@ export const ENGINE_CONFIGS: Record<EngineType, EngineConfig> = {
 /** Directory inside cwd where sentinel files and prompt files are written */
 export const SYNDIC_DIR = '.syndic';
 
+/**
+ * The Roslyn tools a review may reach. Deliberately excludes memory, graph,
+ * configuration, execution and mutation tools.
+ */
+export const SEMANTIC_TOOLS = new Set(['get_workspace_status', 'find_references', 'find_callers',
+  'find_callees', 'find_definition', 'find_implementations', 'get_method_body', 'get_type_members',
+  'get_file_outline', 'understand_method', 'understand_type', 'analyze_data_flow', 'get_errors', 'text_search']);
+
 /** Default task timeout: 30 minutes */
 export const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
 
