@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { nanoid } from 'nanoid';
 import { launchProcess, type ManagedProcess } from './process.js';
 import { parseSentinel } from './sentinel.js';
-import { prepareReview, LiteralToolInvocationError, type ReviewOptions, type ReviewLaunch } from './review.js';
+import { prepareReview, LiteralToolInvocationError, ReviewEvidenceError, type ReviewOptions, type ReviewLaunch } from './review.js';
 import {
   type Task,
   type TaskStatus,
@@ -169,7 +169,8 @@ export class EngineManager {
       'Start immediately. Do not ask for confirmation.',
     ].join('. ');
 
-    const reviewer = review ? await prepareReview(engine, workDir, prompt, review) : undefined;
+    const reviewer = review ? await prepareReview(engine, workDir, prompt, review,
+      join(syndicDir, `${taskId}.review-evidence.jsonl`)) : undefined;
     if (reviewer) this.reviews.set(taskId, reviewer);
 
     // --- task record ---
@@ -237,8 +238,9 @@ export class EngineManager {
         await reviewer.reset();
         if (task.status !== 'running') return;
         const retryArgs = [...spawnArgs.slice(0, -1), spawnArgs.at(-1) +
-          '. The previous attempt returned literal tool invocation text and did not complete. ' +
+          '. The previous attempt did not produce a verified review report. ' +
           'Use native tool calls to invoke the available tools and wait for their results. ' +
+          'Call review_status, read every line of task.prompt, then read the relevant supplied inputs. ' +
           'Do not print XML or JSON as a substitute for invoking a tool. Complete the review and return the report.'];
         const retry = await this.launchProcessImpl(config.command, retryArgs, reviewer.cwd, reviewer.env,
           join(syndicDir, `${taskId}.retry.launch.json`));
@@ -408,7 +410,7 @@ export class EngineManager {
         await this.completeTask(taskId, 'completed', sentinel, output, null);
       } catch (error) {
         if (task.status !== 'running') return;
-        if (error instanceof LiteralToolInvocationError) {
+        if (error instanceof LiteralToolInvocationError || error instanceof ReviewEvidenceError) {
           try {
             const retry = this.reviewRetries.get(taskId);
             await writeFile(join(syndicDir, `${taskId}.attempt-${retry ? 1 : 2}.invalid-output.md`), error.output, 'utf8');
@@ -416,7 +418,7 @@ export class EngineManager {
             if (task.status !== 'running') return;
             if (retry && receipt?.termination === 'stopped') {
               this.reviewRetries.delete(taskId);
-              const warning = `[WARN] Review task ${taskId} returned literal tool invocations; retrying once with native tool instructions.\n`;
+              const warning = `[WARN] Review task ${taskId}: ${error.message} Retrying once with native tool instructions.\n`;
               process.stderr.write(warning);
               task.stdout += warning;
               const pending = retry();

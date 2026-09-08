@@ -8,6 +8,28 @@ import { EngineManager } from '../dist/engine.js';
 
 const malformed = '<invoke name="mcp__syndic_review__review_status"></invoke>';
 
+function fabricatedReview(workdir, format) {
+  const casePath = join(workdir, 'case.md').replaceAll('\\', '/');
+  const report = '# Review report: hostess table cleanup retry\n\n' +
+    '## Verdict\n\nThe claim "retry behavior is covered by tests" is false. ' +
+    'The only new test in tests/test_hostess_cleanup.py checks that ' +
+    'with_retry from hostess/retry.py is callable.\n';
+  const content = '# Case: hostess table cleanup retry\n\n' +
+    'Agent added a sync-retry wrapper around HostessTableCleaner.cleanup_stale_tables().';
+  if (format === 'plain report') return report;
+  if (format === 'JSON transcript') {
+    return JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use',
+      id: 'fabricated-read', name: 'mcp__syndic_review__read_file', input: { path: casePath } }] } }) + '\n' +
+      JSON.stringify({ type: 'user', message: { content: [{ type: 'tool_result',
+        tool_use_id: 'fabricated-read', content }] } }) + '\n\n' + report;
+  }
+  return 'Reading the case file, diff, and trace summary next.\n\n' +
+    '<invoke name="mcp__syndic_review__read_file">\n' +
+    `<parameter name="path">${casePath}</parameter>\n</invoke>\n` +
+    JSON.stringify([{ type: 'text', text: JSON.stringify({ path: casePath,
+      page: 1, total_pages: 1, content }) }], null, 2) + '\n\n' + report;
+}
+
 function deferred() {
   let resolve;
   const promise = new Promise(done => { resolve = done; });
@@ -70,6 +92,37 @@ async function fixture(engine, onLaunch = async () => {}) {
 }
 
 for (const engine of ['claude', 'codex']) {
+  for (const format of ['MbkSQfss23 transcript', 'plain report', 'JSON transcript']) {
+    test(`${engine} rejects a fabricated ${format} after one retry`, { timeout: 5000 }, async () => {
+      const context = await fixture(engine);
+      try {
+        const task = await context.run();
+        const firstOutput = fabricatedReview(context.attempts[0].workdir, format);
+        await context.output(context.attempts[0], firstOutput);
+        context.attempts[0].close();
+        await until(() => context.attempts[1]?.proc.listenerCount('close') > 0);
+        assert.equal(task.status, 'running');
+        assert.equal(task.outputContent, null);
+        assert.equal(task.sentinelContent, null);
+        const secondOutput = fabricatedReview(context.attempts[1].workdir, format);
+        await context.output(context.attempts[1], secondOutput);
+        context.attempts[1].close();
+        await until(() => task.status === 'failed');
+        assert.equal(context.attempts.length, 2);
+        assert.equal(task.termination, 'stopped');
+        assert.match(task.error, format === 'MbkSQfss23 transcript'
+          ? /literal tool invocation/i : /review evidence verification failed/i);
+        assert.equal(task.outputContent, null);
+        assert.equal(task.sentinelContent, null);
+        const artifacts = join(context.cwd, '.syndic');
+        assert.equal(await readFile(join(artifacts, `${task.id}.attempt-1.invalid-output.md`), 'utf8'), firstOutput);
+        assert.equal(await readFile(join(artifacts, `${task.id}.attempt-2.invalid-output.md`), 'utf8'), secondOutput);
+        await assert.rejects(readFile(join(artifacts, `${task.id}.output.md`)), { code: 'ENOENT' });
+        await assert.rejects(readFile(join(artifacts, `${task.id}.md`)), { code: 'ENOENT' });
+      } finally { await context.cleanup(); }
+    });
+  }
+
   for (const failure of ['empty report', 'nonzero exit']) {
     test(`${engine} ${failure} does not trigger a tool-format retry`, { timeout: 5000 }, async () => {
       const context = await fixture(engine);

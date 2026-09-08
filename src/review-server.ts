@@ -2,9 +2,9 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { CallToolRequestSchema, ListToolsRequestSchema, type Tool } from '@modelcontextprotocol/sdk/types.js';
-import { readFile, realpath } from 'node:fs/promises';
-import { resolve } from 'node:path';
+import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolRequest, type Tool } from '@modelcontextprotocol/sdk/types.js';
+import { appendFile, readFile, realpath } from 'node:fs/promises';
+import { isAbsolute, resolve } from 'node:path';
 import { ReviewAccess, inside } from './review-access.js';
 
 // Deliberately excludes memory, graph, configuration, execution and mutation tools.
@@ -13,6 +13,10 @@ const SEMANTIC_TOOLS = new Set(['get_workspace_status', 'find_references', 'find
   'get_file_outline', 'understand_method', 'understand_type', 'analyze_data_flow', 'get_errors', 'text_search']);
 
 const cfg = JSON.parse(await readFile(process.argv[2], 'utf8'));
+if (cfg.audit_path !== undefined && (typeof cfg.audit_path !== 'string' || !isAbsolute(cfg.audit_path) ||
+  !Number.isInteger(cfg.attempt) || cfg.attempt < 1)) {
+  throw new Error('Review audit_path must be absolute and attempt must be a positive integer');
+}
 const root = await realpath(cfg.root);
 const access = new ReviewAccess(root);
 await access.initialize(cfg.inputs);
@@ -71,7 +75,7 @@ const tools: Tool[] = [
 server.setRequestHandler(ListToolsRequestSchema, async () => ({ tools: tools.map(tool => ({
   ...tool, annotations: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
 })) }));
-server.setRequestHandler(CallToolRequestSchema, async request => {
+async function callTool(request: CallToolRequest) {
   try {
     const args = request.params.arguments ?? {};
     switch (request.params.name) {
@@ -104,6 +108,33 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
     }
   } catch (error) {
     return { ...reply(error instanceof Error ? error.message : String(error)), isError: true };
+  }
+}
+
+let auditWrite = Promise.resolve();
+server.setRequestHandler(CallToolRequestSchema, async request => {
+  const result = await callTool(request);
+  if (cfg.audit_path === undefined) return result;
+  try {
+    const success = !('isError' in result && result.isError);
+    const receipt: Record<string, unknown> = {
+      attempt: cfg.attempt, tool: request.params.name, success,
+    };
+    if (success && request.params.name === 'read_file') {
+      const read = JSON.parse((result as { content: Array<{ text: string }> }).content[0].text);
+      Object.assign(receipt, { resolved_path: read.resolved_path, source: read.source,
+        offset: read.offset, count: read.lines.length, total_lines: read.total_lines });
+    }
+    // Parallel tool calls share one ordered append queue. Only broker results
+    // enter this log; model-generated transcripts cannot establish evidence use.
+    const pending = auditWrite.then(() => appendFile(cfg.audit_path, JSON.stringify(receipt) + '\n', 'utf8'));
+    auditWrite = pending.catch(() => {});
+    await pending;
+    return result;
+  } catch (error) {
+    const message = `Review evidence receipt could not be recorded: ${error instanceof Error ? error.message : String(error)}`;
+    process.stderr.write(`[ERROR] ${message}\n`);
+    return { ...reply(message), isError: true };
   }
 });
 await server.connect(new StdioServerTransport());

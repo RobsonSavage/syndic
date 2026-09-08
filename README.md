@@ -189,13 +189,22 @@ the report. A transport success is not evidence of a complete review.
 
 Claude review launches preserve the CLI's built-in tool guidance and append the
 review instructions; personal and project instruction files remain disabled.
-If a review returns literal tool invocation text, syndic retries once after
+If a review returns literal tool invocation text (including after a prose opening),
+or lacks broker-confirmed evidence reads, syndic retries once after
 confirming the first process job has stopped. The retry keeps the task ID, model,
 permissions and original timeout, and asks the CLI to make native tool calls.
-Syndic never executes the printed invocation text. A second malformed response
+Syndic never executes the printed invocation text. A second invalid response
 fails the task. Rejected responses are retained as
 `.syndic/<id>.attempt-1.invalid-output.md` and, if needed,
 `.syndic/<id>.attempt-2.invalid-output.md`.
+
+Before accepting a report, syndic requires broker receipts for `review_status`,
+all lines of `task.prompt`, and at least one supplied input when `review_inputs`
+is nonempty. Each retry must establish its own reads. Broker receipts retain tool
+names, outcomes, and read paths/ranges in `.syndic/<id>.review-evidence.jsonl`
+after temporary files are removed; they do not contain file contents. These checks
+establish that evidence was accessed, not that every relevant file was reviewed
+or that the report's conclusions are correct. The coordinator still checks coverage.
 
 Review mode automatically uses `%LOCALAPPDATA%/RoslynMcp/RoslynMcp.Server.exe`,
 the standard per-user installation. Supply `review_roslyn` to override that launcher

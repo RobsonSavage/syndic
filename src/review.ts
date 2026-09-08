@@ -15,6 +15,12 @@ export class LiteralToolInvocationError extends Error {
   }
 }
 
+export class ReviewEvidenceError extends Error {
+  constructor(readonly output: string, reason: string) {
+    super(`Review evidence verification failed: ${reason}`);
+  }
+}
+
 // Resolve only the trusted per-user installation, never an executable in the
 // reviewed repository or on its PATH. Roslyn owns solution discovery.
 export async function resolveReviewRoslyn(override: ReviewOptions['roslyn'],
@@ -53,7 +59,7 @@ export function reviewEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv 
 }
 
 export async function prepareReview(engine: EngineType, root: string, prompt: string,
-  options: ReviewOptions): Promise<ReviewLaunch> {
+  options: ReviewOptions, auditPath?: string): Promise<ReviewLaunch> {
   if (engine !== 'claude' && engine !== 'codex') throw new Error('Review mode supports Claude and Codex only');
   const roslyn = await resolveReviewRoslyn(options.roslyn);
   const inputs = await Promise.all(options.inputs.map(path => realpath(path)));
@@ -63,6 +69,8 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
   };
   try {
     const promptPath = join(cwd, 'task.prompt');
+    const auditFile = auditPath ?? join(cwd, 'evidence.jsonl');
+    let attempt = 1;
     const evidenceProtocol = [
       'Syndic evidence protocol:',
       'Call review_status before inspecting evidence. Its supplied_inputs inventory includes files outside list_files.',
@@ -72,9 +80,14 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
       'In the report, identify evidence used and relevant evidence left unread, including failed reads and unread line ranges. Unread evidence is not unavailable evidence.',
       'Return the complete Markdown report as your final response. Syndic saves it. Do not write files.',
     ].join('\n');
-    await writeFile(promptPath, prompt + '\n\n' + evidenceProtocol + '\n', 'utf8');
-    await writeFile(join(cwd, 'access.json'), JSON.stringify({ root, inputs: [...inputs, promptPath],
+    const taskPrompt = prompt + '\n\n' + evidenceProtocol + '\n';
+    await writeFile(promptPath, taskPrompt, 'utf8');
+    const resolvedPrompt = await realpath(promptPath);
+    const promptLines = taskPrompt.split(/\r?\n/).length;
+    const writeAccess = () => writeFile(join(cwd, 'access.json'), JSON.stringify({ root,
+      inputs: [...inputs, promptPath], audit_path: auditFile, attempt,
       roslyn: roslyn.roslyn, roslyn_error: roslyn.error }), 'utf8');
+    await writeAccess();
     const server = { command: process.execPath, args: [fileURLToPath(new URL('./review-server.js', import.meta.url)), join(cwd, 'access.json')] };
     const env = { ...reviewEnvironment(process.env), MSYS2_ARG_CONV_EXCL: '*',
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1' };
@@ -129,14 +142,61 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
         // Some engines end successfully with serialized tool calls in their text
         // response. Those calls were never dispatched and are not a report.
         // Allow the corrupted opener words reported in Claude issue #74063.
-        // Anchor at the start so a report quoting a broken call remains valid.
+        // Reject a response consisting only of a fenced invocation too.
         if (/^\s*(?:```(?:xml)?\s*)?(?:(?:court|count|course|call)\s+)?(?:<(?:antml:)?function_calls>\s*)?<(?:antml:)?invoke\b/i.test(output)) {
           throw new LiteralToolInvocationError(output);
+        }
+        // A narrative preamble does not make a simulated tool transcript valid.
+        // Preserve Markdown quotations, fenced samples and inline code in reports.
+        let fence: string | undefined;
+        for (const line of output.split(/\r?\n/)) {
+          if (/^\s*>/.test(line)) continue;
+          const marker = /^\s{0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+          if (marker) {
+            if (!fence) fence = marker;
+            else if (marker[0] === fence[0] && marker.length >= fence.length) fence = undefined;
+            continue;
+          }
+          if (!fence && /<(?:antml:)?invoke\b/i.test(line.replace(/(`+).*?\1/g, ''))) {
+            throw new LiteralToolInvocationError(output);
+          }
+        }
+        // Only the restricted broker writes these receipts. Model-authored text,
+        // including a plausible transcript or CLI result, is not proof of a read.
+        let receipts: Array<{ attempt: number; tool: string; success: boolean;
+          resolved_path?: string; offset?: number; count?: number; total_lines?: number }>;
+        try {
+          receipts = (await readFile(auditFile, 'utf8')).split(/\r?\n/)
+            .filter(Boolean).map(line => JSON.parse(line))
+            .filter(event => event.attempt === attempt && event.success === true);
+        } catch {
+          throw new ReviewEvidenceError(output, 'no readable broker receipts for this attempt.');
+        }
+        if (!receipts.some(event => event.tool === 'review_status')) {
+          throw new ReviewEvidenceError(output, 'review_status was not successfully called.');
+        }
+        const ranges = receipts.filter(event => event.tool === 'read_file' && event.resolved_path === resolvedPrompt &&
+          event.total_lines === promptLines && Number.isInteger(event.offset) && Number.isInteger(event.count) &&
+          event.offset! >= 1 && event.count! > 0)
+          .sort((left, right) => left.offset! - right.offset!);
+        let nextLine = 1;
+        for (const range of ranges) {
+          if (range.offset! > nextLine) break;
+          nextLine = Math.max(nextLine, range.offset! + range.count!);
+        }
+        if (nextLine <= promptLines) {
+          throw new ReviewEvidenceError(output, `task.prompt was not fully read (first unread line: ${nextLine}).`);
+        }
+        if (inputs.length && !receipts.some(event => event.tool === 'read_file' &&
+          inputs.includes(event.resolved_path!) && event.count! > 0)) {
+          throw new ReviewEvidenceError(output, 'none of the supplied input files were read.');
         }
         return output;
       },
       async reset() {
         response = '';
+        attempt++;
+        await writeAccess();
         if (engine === 'codex') await rm(join(cwd, 'response.md'), { force: true });
       },
     };

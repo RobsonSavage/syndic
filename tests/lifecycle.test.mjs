@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm, writeFile, readFile, readdir } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile, readdir, realpath } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { EngineManager } from '../dist/engine.js';
@@ -21,6 +21,17 @@ for (const engine of ['claude', 'codex']) {
           (recovers ? 'court\n' : '\n') + '<invoke name="mcp__syndic_review__review_status">\n</invoke>\n' +
           '<invoke name="mcp__syndic_review__read_file">\n' +
           `<parameter name="path">${join(workdir, 'task.prompt')}</parameter>\n</invoke>`;
+        if (attempt === 2 && recovers) {
+          // The fake process models broker reads as well as the CLI report.
+          const access = JSON.parse(await readFile(join(workdir, 'access.json'), 'utf8'));
+          const promptPath = await realpath(join(workdir, 'task.prompt'));
+          const lines = (await readFile(promptPath, 'utf8')).split(/\r?\n/).length;
+          await writeFile(access.audit_path, [
+            { attempt: access.attempt, tool: 'review_status', success: true },
+            { attempt: access.attempt, tool: 'read_file', success: true,
+              resolved_path: promptPath, offset: 1, count: lines, total_lines: lines },
+          ].map(value => JSON.stringify(value)).join('\n') + '\n');
+        }
         if (engine === 'claude') {
           proc.stdout.emit('data', JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: output }) + '\n');
         } else {
