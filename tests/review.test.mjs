@@ -91,6 +91,7 @@ test('Claude preserves native tool guidance while excluding instruction files', 
     assert.equal(launch.args[launch.args.indexOf('--tools') + 1], '');
     assert.equal(launch.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS, '1');
     assert.equal(launch.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
+    assert.equal(launch.env.MCP_TIMEOUT, '240000');
   } finally { await launch.cleanup(); }
 });
 
@@ -148,6 +149,7 @@ test('both review engines receive the evidence inventory and attribution protoco
     const launch = await prepareReview(engine, process.cwd(), 'Review the supplied code.', { inputs: [] });
     try {
       assert.match(launch.args.at(-1), /review_status/);
+      if (engine === 'codex') assert.ok(launch.args.includes('mcp_servers.syndic_review.startup_timeout_sec=240'));
       const prompt = await readFile(join(launch.cwd, 'task.prompt'), 'utf8');
       assert.match(prompt, /supplied_inputs/);
       assert.match(prompt, /not committed HEAD or index blobs/);

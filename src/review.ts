@@ -89,11 +89,13 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
       roslyn: roslyn.roslyn, roslyn_error: roslyn.error }), 'utf8');
     await writeAccess();
     const server = { command: process.execPath, args: [fileURLToPath(new URL('./review-server.js', import.meta.url)), join(cwd, 'access.json')] };
-    const env = { ...reviewEnvironment(process.env), MSYS2_ARG_CONV_EXCL: '*',
+    const env: NodeJS.ProcessEnv = { ...reviewEnvironment(process.env), MSYS2_ARG_CONV_EXCL: '*',
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1' };
     const boot = `Call syndic_review review_status for the supplied-input inventory and read semantics, then use read_file to read ${promptPath.replaceAll('\\', '/')} and perform that review. Return the report in your final response`;
     let args: string[];
     if (engine === 'claude') {
+      // Cold Roslyn solution loading completes before the broker accepts MCP connections.
+      env.MCP_TIMEOUT = '240000';
       await writeFile(join(cwd, 'mcp.json'), JSON.stringify({ mcpServers: { syndic_review: server } }), 'utf8');
       await writeFile(join(cwd, 'settings.json'), JSON.stringify({ disableAllHooks: true, autoMemoryEnabled: false }), 'utf8');
       args = ['--restricted', '--strict-mcp-config', '--mcp-config', 'mcp.json', '--tools', '',
@@ -113,7 +115,7 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
         'features.multi_agent=false', 'features.skill_search=false', 'features.skip_host_skill_discovery=true',
         `mcp_servers.syndic_review.command=${JSON.stringify(server.command)}`,
         `mcp_servers.syndic_review.args=${JSON.stringify(server.args)}`,
-        'mcp_servers.syndic_review.startup_timeout_sec=120', 'mcp_servers.syndic_review.tool_timeout_sec=120'];
+        'mcp_servers.syndic_review.startup_timeout_sec=240', 'mcp_servers.syndic_review.tool_timeout_sec=120'];
       args = ['exec', '--ignore-user-config', '--ignore-rules', '--strict-config', '--ephemeral',
         '--skip-git-repo-check', '-s', 'read-only', ...overrides.flatMap(value => ['-c', value]), '-o', 'response.md', boot];
     }
