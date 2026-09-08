@@ -81,6 +81,7 @@ Spawn an external AI CLI engine to execute a task.
 | `yolo` | `boolean` | No | If `true`, run engine without guardrails. Default: `false` (safe mode). See [Safe mode vs YOLO mode](#safe-mode-vs-yolo-mode). |
 | `model` | `string` | No | Model override for Codex, Gemini, Claude Code, or OpenCode (`provider/model`). Omit to use the CLI default. For Gemini, only set when the user explicitly requests a model. |
 | `reasoning_effort` | `string` | No | Codex or Claude Code reasoning effort, or OpenCode model variant, supported by the selected model/provider. Omit to use the CLI default. Rejected for Gemini. |
+| `skip_git_repo_check` | `boolean` | No | Codex only. Set `true` when `cwd` is knowingly not a git repository; otherwise `codex exec` refuses to start with `Not inside a trusted directory`. What the engine writes there is outside revision control. Default: `false`. Rejected for the other engines. |
 | `mode` | `"default" \| "review"` | No | `review` restricts Claude/Codex to source/semantic inspection and captures their final report. Requires `yolo: false`. |
 | `review_inputs` | `string[]` | No | Absolute paths to packet/procedure/evidence files the reviewer may read, in addition to tracked repository source. |
 | `review_roslyn` | `{command: string, args?: string[]}` | No | Override the automatic per-user Roslyn installation with a trusted absolute executable and arguments. Review mode only. |

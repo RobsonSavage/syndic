@@ -12,6 +12,12 @@ const SEMANTIC_TOOLS = new Set(['get_workspace_status', 'find_references', 'find
   'find_callees', 'find_definition', 'find_implementations', 'get_method_body', 'get_type_members',
   'get_file_outline', 'understand_method', 'understand_type', 'analyze_data_flow', 'get_errors', 'text_search']);
 
+// This broker answers no MCP request until Roslyn has finished selecting the
+// solution, and a broker that misses the launcher's four-minute startup
+// allowance is dropped, leaving the reviewer with no tools at all. Bound the
+// cold load well inside that allowance and degrade to the file tools instead.
+const ROSLYN_STARTUP_MS = 180_000;
+
 const cfg = JSON.parse(await readFile(process.argv[2], 'utf8'));
 if (cfg.audit_path !== undefined && (typeof cfg.audit_path !== 'string' || !isAbsolute(cfg.audit_path) ||
   !Number.isInteger(cfg.attempt) || cfg.attempt < 1)) {
@@ -37,8 +43,8 @@ function solutionPath(result: unknown): string | undefined {
   }
 }
 
-async function validateWorkspace(): Promise<void> {
-  const result = await roslyn!.callTool({ name: 'get_workspace_status', arguments: {} });
+async function validateWorkspace(client: Client): Promise<void> {
+  const result = await client.callTool({ name: 'get_workspace_status', arguments: {} });
   const path = solutionPath(result);
   if (result.isError || !path || !inside(root, await realpath(path))) {
     throw new Error('Roslyn solution mismatch or unavailable');
@@ -46,22 +52,37 @@ async function validateWorkspace(): Promise<void> {
 }
 
 if (cfg.roslyn) {
+  const client = new Client({ name: 'syndic-review', version: '1' });
+  let expiry: ReturnType<typeof setTimeout> | undefined;
   try {
-    roslyn = new Client({ name: 'syndic-review', version: '1' });
     const transport = new StdioClientTransport({ command: cfg.roslyn.command, args: cfg.roslyn.args ?? [],
       cwd: root, env: Object.fromEntries(Object.entries(process.env).filter((pair): pair is [string, string] => typeof pair[1] === 'string')),
       stderr: 'pipe' });
     transport.stderr?.on('data', () => { /* upstream diagnostics never become reviewer memory/context */ });
-    await roslyn.connect(transport);
-    const selection = await roslyn.callTool({ name: 'set_solution_root', arguments: { rootPath: root, warmUp: false } });
-    if (selection.isError) throw new Error(`Roslyn selection failed: ${JSON.stringify(selection.content)}`);
-    await validateWorkspace();
-    semantic = (await roslyn.listTools()).tools.filter(tool => SEMANTIC_TOOLS.has(tool.name));
+    const startup = (async () => {
+      await client.connect(transport);
+      const selection = await client.callTool({ name: 'set_solution_root', arguments: { rootPath: root, warmUp: false } });
+      if (selection.isError) throw new Error(`Roslyn selection failed: ${JSON.stringify(selection.content)}`);
+      await validateWorkspace(client);
+      return (await client.listTools()).tools.filter(tool => SEMANTIC_TOOLS.has(tool.name));
+    })();
+    // An attempt abandoned at the deadline rejects once the client is closed.
+    // The race already reported the failure; a late rejection must not stop
+    // the broker from serving the file tools.
+    startup.catch(() => { });
+    // Semantic tools are published only by the winning startup, so an
+    // abandoned attempt cannot advertise a client that is no longer connected.
+    semantic = await Promise.race([startup, new Promise<never>((_, reject) => {
+      expiry = setTimeout(() => reject(new Error(
+        `Roslyn did not finish selecting the solution within ${ROSLYN_STARTUP_MS / 1000}s`)), ROSLYN_STARTUP_MS);
+    })]);
+    roslyn = client;
     roslynError = '';
   } catch (error) {
     roslynError = error instanceof Error ? error.message : String(error);
-    await roslyn?.close();
-    roslyn = undefined;
+    await client.close().catch(() => { });
+  } finally {
+    clearTimeout(expiry);
   }
 }
 
@@ -102,7 +123,7 @@ async function callTool(request: CallToolRequest) {
             throw new Error('Semantic path outside the review root');
           }
         }
-        await validateWorkspace();
+        await validateWorkspace(roslyn);
         return await roslyn.callTool(request.params);
       }
     }

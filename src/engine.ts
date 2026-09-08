@@ -27,6 +27,20 @@ function stripAnsi(str: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// Launch banner
+// ---------------------------------------------------------------------------
+
+// Codex prints the resolved model and reasoning effort in every mode. A caller
+// that omitted both has no other way to see what the CLI actually selected.
+function observeCodexBanner(task: Task, stderr: string): void {
+  const model = /^model:\s*(\S+)\s*$/m.exec(stderr)?.[1];
+  const effort = /^reasoning effort:\s*(\S+)\s*$/m.exec(stderr)?.[1];
+  if (model || effort) {
+    task.observed = { model: model ?? null, reasoning_effort: effort ?? null, source: 'CLI launch banner' };
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Prompt file builder
 // ---------------------------------------------------------------------------
 
@@ -116,6 +130,7 @@ export class EngineManager {
     model?: string,
     reasoningEffort?: string,
     review?: ReviewOptions,
+    skipGitRepoCheck?: boolean,
   ): Promise<Task> {
     if (review && (yolo || (engine !== 'claude' && engine !== 'codex'))) {
       throw new Error('Review mode requires Claude or Codex and yolo=false');
@@ -126,8 +141,18 @@ export class EngineManager {
         throw new Error(`Invalid ${name}: expected a non-empty model or effort identifier.`);
       }
     }
-    if (reasoningEffort !== undefined && engine === 'gemini') {
+    // Callers read "omit to use the CLI default" and send the word instead.
+    // Forwarded as an identifier it reaches the provider, which rejects it
+    // with a 400. Treat it as the omission it was meant to be; `requested`
+    // still records what the caller asked for.
+    const omitDefault = (value?: string) => value?.toLowerCase() === 'default' ? undefined : value;
+    const launchModel = omitDefault(model);
+    const launchEffort = omitDefault(reasoningEffort);
+    if (launchEffort !== undefined && engine === 'gemini') {
       throw new Error(`reasoning_effort is not supported for ${engine}.`);
+    }
+    if (skipGitRepoCheck && engine !== 'codex') {
+      throw new Error(`skip_git_repo_check is not supported for ${engine}.`);
     }
     if (prompt.length > MAX_PROMPT_CHARS) {
       throw new Error(
@@ -190,7 +215,7 @@ export class EngineManager {
       termination: 'running',
       terminationError: null,
       requested: { model: model ?? null, reasoning_effort: reasoningEffort ?? null },
-      launch: { model: model ?? null, reasoning_effort: reasoningEffort ?? null, mode: reviewer ? 'review' : yolo ? 'unrestricted' : 'default' },
+      launch: { model: launchModel ?? null, reasoning_effort: launchEffort ?? null, mode: reviewer ? 'review' : yolo ? 'unrestricted' : 'default' },
       observed: { model: null, reasoning_effort: null, source: null },
     };
     this.tasks.set(taskId, task);
@@ -203,19 +228,23 @@ export class EngineManager {
     // the sentinel/output files never appear. --dir is a `run` subcommand
     // flag, so it must be injected after 'run' — we splice it directly into
     // modeArgs for opencode.
+    // Codex refuses an untracked working directory unless the caller states it
+    // knows the engine will write files no revision control can undo. Review
+    // mode carries its own copy of the flag: it works in a temporary directory.
     const modeArgs =
-      engine === 'opencode' ? [...baseModeArgs, '--dir', workDir] : baseModeArgs;
+      engine === 'opencode' ? [...baseModeArgs, '--dir', workDir]
+        : skipGitRepoCheck ? [...baseModeArgs, '--skip-git-repo-check'] : baseModeArgs;
     const promptArgs = config.promptFlag ? [config.promptFlag, bootPrompt] : [bootPrompt];
-    const modelArgs = model !== undefined ? ['--model', model] : [];
-    const effortArgs = reasoningEffort === undefined ? [] : engine === 'codex'
-      ? ['-c', `model_reasoning_effort=${reasoningEffort}`]
-      : [engine === 'claude' ? '--effort' : '--variant', reasoningEffort];
+    const modelArgs = launchModel !== undefined ? ['--model', launchModel] : [];
+    const effortArgs = launchEffort === undefined ? [] : engine === 'codex'
+      ? ['-c', `model_reasoning_effort=${launchEffort}`]
+      : [engine === 'claude' ? '--effort' : '--variant', launchEffort];
     const spawnArgs = reviewer ? [...reviewer.args.slice(0, -1), ...modelArgs, ...effortArgs, reviewer.args.at(-1)!]
       : [...modeArgs, ...modelArgs, ...effortArgs, ...promptArgs];
 
     process.stderr.write(
-      `[INFO] Starting ${engine} task ${taskId}; model=${modelArgs.length ? model : 'CLI default'}; ` +
-      `reasoning_effort=${reasoningEffort ?? 'CLI default'}\n`,
+      `[INFO] Starting ${engine} task ${taskId}; model=${launchModel ?? 'CLI default'}; ` +
+      `reasoning_effort=${launchEffort ?? 'CLI default'}\n`,
     );
 
     let managed: ManagedProcess;
@@ -312,6 +341,13 @@ export class EngineManager {
     });
   }
 
+  private observeLaunch(task: Task): void {
+    const streams = this.streams.get(task.id);
+    if (!streams) return;
+    this.reviews.get(task.id)?.observe(task, streams.stdout, streams.stderr);
+    if (task.engine === 'codex') observeCodexBanner(task, streams.stderr);
+  }
+
   getTask(taskId: string): Task | undefined {
     return this.tasks.get(taskId);
   }
@@ -398,8 +434,7 @@ export class EngineManager {
 
     const reviewer = this.reviews.get(taskId);
     if (reviewer) {
-      const streams = this.streams.get(taskId)!;
-      reviewer.observe(task, streams.stdout, streams.stderr);
+      this.observeLaunch(task);
       try {
         if (code !== 0) throw new Error(`Review CLI exited with code ${code}`);
         const output = await reviewer.result();
@@ -498,8 +533,7 @@ export class EngineManager {
       new Promise<void>(resolve => { timer = setTimeout(resolve, 15_000); })]);
     if (timer) clearTimeout(timer);
     const receipt = await managed?.receipt();
-    const streams = this.streams.get(taskId);
-    if (streams) this.reviews.get(taskId)?.observe(task, streams.stdout, streams.stderr);
+    this.observeLaunch(task);
     task.pid = receipt?.pid ?? null;
     task.termination = receipt?.termination === 'stopped' ? 'stopped' : 'unknown';
     task.terminationError = task.termination === 'stopped' ? null : 'Supervisor did not confirm an empty process job';

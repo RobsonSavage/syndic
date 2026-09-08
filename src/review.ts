@@ -121,21 +121,18 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
     }
     let response = '';
     return { cwd, args, env, cleanup,
-      observe(task, stdout, stderr) {
-        if (engine === 'claude') {
-          for (const line of stdout.split(/\r?\n/)) {
-            try {
-              const event = JSON.parse(line);
-              if (event.type === 'system' && event.subtype === 'init' && typeof event.model === 'string') {
-                task.observed = { model: event.model, reasoning_effort: null, source: 'CLI system.init event' };
-              }
-              if (event.type === 'result' && !event.is_error && typeof event.result === 'string') response = event.result;
-            } catch { }
-          }
-        } else {
-          const model = /^model:\s*(\S+)\s*$/m.exec(stderr)?.[1];
-          const effort = /^reasoning effort:\s*(\S+)\s*$/m.exec(stderr)?.[1];
-          if (model || effort) task.observed = { model: model ?? null, reasoning_effort: effort ?? null, source: 'CLI launch banner' };
+      // The Codex launch banner is read by the engine manager, which records it
+      // in every mode.
+      observe(task, stdout) {
+        if (engine !== 'claude') return;
+        for (const line of stdout.split(/\r?\n/)) {
+          try {
+            const event = JSON.parse(line);
+            if (event.type === 'system' && event.subtype === 'init' && typeof event.model === 'string') {
+              task.observed = { model: event.model, reasoning_effort: null, source: 'CLI system.init event' };
+            }
+            if (event.type === 'result' && !event.is_error && typeof event.result === 'string') response = event.result;
+          } catch { }
         }
       },
       async result() {

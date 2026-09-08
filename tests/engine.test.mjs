@@ -61,6 +61,38 @@ test('engine launch overrides and defaults', async () => {
       }
     }
     {
+      // "default" is how the tool documents omission. Forwarded as an
+      // identifier it reaches the provider, which rejects it with a 400.
+      for (const engine of ['codex', 'opencode', 'claude', 'gemini']) {
+        const task = await manager.run(engine, 'Inspect the task', cwd, undefined, false, false, 'Default', 'DEFAULT');
+        const { args } = launches.at(-1);
+        assert.equal(args.includes('--model'), false);
+        assert.equal(args.includes('--effort'), false);
+        assert.equal(args.includes('--variant'), false);
+        assert.equal(args.some(arg => arg.startsWith('model_reasoning_effort=')), false);
+        assert.deepEqual(task.requested, { model: 'Default', reasoning_effort: 'DEFAULT' });
+        assert.deepEqual(task.launch, { model: null, reasoning_effort: null, mode: 'default' });
+      }
+    }
+    {
+      // Codex refuses an untracked working directory; only a caller that says
+      // it knows that disables the check.
+      for (const yolo of [false, true]) {
+        await manager.run('codex', 'Inspect the task', cwd, undefined, false, yolo, undefined, undefined, undefined, true);
+        const { args } = launches.at(-1);
+        assert.equal(args[2], 'exec');
+        assert.ok(args.includes('--skip-git-repo-check'));
+        assert.match(args.at(-1), /^Read and execute the task defined in:/);
+      }
+      await manager.run('codex', 'Inspect the task', cwd, undefined, false, false);
+      assert.equal(launches.at(-1).args.includes('--skip-git-repo-check'), false);
+      for (const engine of ['opencode', 'gemini', 'claude']) {
+        await assert.rejects(
+          manager.run(engine, 'Inspect the task', cwd, undefined, false, false, undefined, undefined, undefined, true),
+          /skip_git_repo_check is not supported/);
+      }
+    }
+    {
       const before = await readdir(join(cwd, '.syndic'));
       const count = launches.length;
       for (const invalid of ['', '-flag', 'a&whoami', '%PATH%', 'a b', 'a"b', 'a\nb']) {
@@ -77,4 +109,25 @@ test('engine launch overrides and defaults', async () => {
     await manager.shutdown();
     await rm(cwd, { recursive: true, force: true });
   }
+});
+
+test('codex records the launch banner outside review mode', async () => {
+  const cwd = await mkdtemp(join(process.cwd(), '.syndic-banner-'));
+  const { EngineManager } = await import('../dist/engine.js');
+  const manager = new EngineManager(async () => {
+    const proc = new EventEmitter();
+    proc.stdout = new EventEmitter(); proc.stderr = new EventEmitter();
+    setImmediate(() => {
+      proc.stderr.emit('data', 'OpenAI Codex v0.153.4\n--------\nworkdir: ' + cwd +
+        '\nmodel: gpt-6-astra\nprovider: openai\nreasoning effort: none\n--------\n');
+      proc.emit('close', 0);
+    });
+    return { proc, receipt: async () => ({ pid: 7, termination: 'stopped', exit_code: 0 }), stop: () => {} };
+  });
+  try {
+    const task = await manager.run('codex', 'Inspect the task', cwd, 10000, true);
+    assert.deepEqual(task.launch, { model: null, reasoning_effort: null, mode: 'default' });
+    assert.deepEqual(task.observed,
+      { model: 'gpt-6-astra', reasoning_effort: 'none', source: 'CLI launch banner' });
+  } finally { await manager.shutdown(); await rm(cwd, { recursive: true, force: true }); }
 });
