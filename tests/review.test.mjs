@@ -8,6 +8,32 @@ import { prepareReview, resolveReviewRoslyn, reviewEnvironment } from '../dist/r
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
+test('review report validation rejects invocation wrappers but permits quoted evidence', async () => {
+  for (const engine of ['claude', 'codex']) {
+    const launch = await prepareReview(engine, process.cwd(), 'Analyze the supplied code.', { inputs: [] });
+    try {
+      const result = async output => {
+        if (engine === 'codex') await writeFile(join(launch.cwd, 'response.md'), output);
+        else launch.observe({}, JSON.stringify({ type: 'result', is_error: false, result: output }), '');
+        return launch.result();
+      };
+      for (const output of [
+        '<invoke name="mcp__syndic_review__review_status"></invoke>',
+        '<function_calls>\n<invoke name="mcp__syndic_review__review_status">',
+        '<antml:function_calls>\n<antml:invoke name="mcp__syndic_review__review_status">',
+        '```xml\n<invoke name="mcp__syndic_review__review_status"></invoke>\n```',
+        ...['court', 'count', 'course', 'call'].map(prefix =>
+          `${prefix}\n<invoke name="mcp__syndic_review__review_status"></invoke>`),
+      ]) await assert.rejects(result(output), /literal tool invocation/i);
+      const report = '## Findings\nThe captured output contains a malformed call:\n' +
+        '```xml\n<invoke name="mcp__syndic_review__review_status"></invoke>\n```';
+      assert.equal(await result(report), report);
+      assert.equal(await result('## Findings\nNo issues found.'), '## Findings\nNo issues found.');
+      await assert.rejects(result('   '), /did not return a review report/);
+    } finally { await launch.cleanup(); }
+  }
+});
+
 test('automatic Roslyn resolution uses the per-user install and preserves explicit overrides', async () => {
   const cwd = await mkdtemp(join(process.cwd(), '.syndic-access-'));
   try {
@@ -29,6 +55,19 @@ test('review environment removes unrelated credentials and startup injection', (
   const env = reviewEnvironment({ PATH: 'path', GH_TOKEN: 'canary', NODE_OPTIONS: 'canary',
     BTNET_MCP: 'canary', CLAUDECODE: 'canary', OPENAI_API_KEY: 'model-auth' });
   assert.deepEqual(env, { PATH: 'path', OPENAI_API_KEY: 'model-auth' });
+});
+
+test('Claude preserves native tool guidance while excluding instruction files', async () => {
+  const launch = await prepareReview('claude', process.cwd(), 'Analyze the supplied evidence.', { inputs: [] });
+  try {
+    assert.ok(launch.args.includes('--append-system-prompt'));
+    assert.ok(!launch.args.includes('--system-prompt'));
+    assert.ok(launch.args.includes('--restricted'));
+    assert.ok(launch.args.includes('--strict-mcp-config'));
+    assert.equal(launch.args[launch.args.indexOf('--tools') + 1], '');
+    assert.equal(launch.env.CLAUDE_CODE_DISABLE_CLAUDE_MDS, '1');
+    assert.equal(launch.env.CLAUDE_CODE_DISABLE_AUTO_MEMORY, '1');
+  } finally { await launch.cleanup(); }
 });
 
 test('review broker distinguishes disk reads from HEAD and discovers external snapshots', async () => {

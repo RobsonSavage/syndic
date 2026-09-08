@@ -9,6 +9,12 @@ export interface ReviewOptions {
   roslyn?: { command: string; args?: string[] };
 }
 
+export class LiteralToolInvocationError extends Error {
+  constructor(readonly output: string) {
+    super('CLI returned literal tool invocation text instead of a review report.');
+  }
+}
+
 // Resolve only the trusted per-user installation, never an executable in the
 // reviewed repository or on its PATH. Roslyn owns solution discovery.
 export async function resolveReviewRoslyn(override: ReviewOptions['roslyn'],
@@ -34,6 +40,7 @@ export interface ReviewLaunch {
   env: NodeJS.ProcessEnv;
   result(): Promise<string>;
   observe(task: Task, stdout: string, stderr: string): void;
+  reset(): Promise<void>;
   cleanup(): Promise<void>;
 }
 
@@ -69,7 +76,8 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
     await writeFile(join(cwd, 'access.json'), JSON.stringify({ root, inputs: [...inputs, promptPath],
       roslyn: roslyn.roslyn, roslyn_error: roslyn.error }), 'utf8');
     const server = { command: process.execPath, args: [fileURLToPath(new URL('./review-server.js', import.meta.url)), join(cwd, 'access.json')] };
-    const env = { ...reviewEnvironment(process.env), MSYS2_ARG_CONV_EXCL: '*', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' };
+    const env = { ...reviewEnvironment(process.env), MSYS2_ARG_CONV_EXCL: '*',
+      CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1' };
     const boot = `Call syndic_review review_status for the supplied-input inventory and read semantics, then use read_file to read ${promptPath.replaceAll('\\', '/')} and perform that review. Return the report in your final response`;
     let args: string[];
     if (engine === 'claude') {
@@ -79,7 +87,9 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
         '--permission-mode', 'dontAsk', '--allowedTools', 'mcp__syndic_review__*',
         '--setting-sources', '', '--settings', 'settings.json', '--disable-slash-commands',
         '--no-session-persistence', '--no-chrome', '--output-format', 'stream-json', '--verbose',
-        '--system-prompt', 'Review only the supplied evidence using the syndic_review tools. Return a Markdown report. Memory and external actions are outside this task.',
+        // Preserve the CLI's native tool-use guidance; instruction-file loading
+        // is disabled separately in the environment above.
+        '--append-system-prompt', 'Review only the supplied evidence using the syndic_review tools. Invoke tools through native tool calls and wait for their results; do not print tool invocations as text. Return a Markdown report. Memory and external actions are outside this task.',
         '-p', boot];
     } else {
       // --ignore-user-config also suppresses file profiles on the installed CLI.
@@ -116,7 +126,18 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
       async result() {
         const output = engine === 'codex' ? await readFile(join(cwd, 'response.md'), 'utf8') : response;
         if (!output.trim()) throw new Error('CLI did not return a review report');
+        // Some engines end successfully with serialized tool calls in their text
+        // response. Those calls were never dispatched and are not a report.
+        // Allow the corrupted opener words reported in Claude issue #74063.
+        // Anchor at the start so a report quoting a broken call remains valid.
+        if (/^\s*(?:```(?:xml)?\s*)?(?:(?:court|count|course|call)\s+)?(?:<(?:antml:)?function_calls>\s*)?<(?:antml:)?invoke\b/i.test(output)) {
+          throw new LiteralToolInvocationError(output);
+        }
         return output;
+      },
+      async reset() {
+        response = '';
+        if (engine === 'codex') await rm(join(cwd, 'response.md'), { force: true });
       },
     };
   } catch (error) { await cleanup(); throw error; }

@@ -1,9 +1,68 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile, readFile, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { EngineManager } from '../dist/engine.js';
+
+for (const engine of ['claude', 'codex']) {
+  for (const recovers of [true, false]) test(`${engine} retries literal tool invocations once (${recovers ? 'recovers' : 'fails'})`, async () => {
+    const cwd = await mkdtemp(join(process.cwd(), '.syndic-outcome-'));
+    const attempts = [];
+    const report = '## Findings\nThe supplied evidence has been analyzed.';
+    const manager = new EngineManager(async (command, args, workdir, env, launchFile) => {
+      const proc = new EventEmitter();
+      proc.stdout = new EventEmitter(); proc.stderr = new EventEmitter();
+      attempts.push({ command, args, workdir, env, launchFile });
+      const attempt = attempts.length;
+      setImmediate(async () => {
+        // Replay UgjzjeyGhm's output, with its machine-specific path replaced.
+        const output = attempt === 2 && recovers ? report :
+          (recovers ? 'court\n' : '\n') + '<invoke name="mcp__syndic_review__review_status">\n</invoke>\n' +
+          '<invoke name="mcp__syndic_review__read_file">\n' +
+          `<parameter name="path">${join(workdir, 'task.prompt')}</parameter>\n</invoke>`;
+        if (engine === 'claude') {
+          proc.stdout.emit('data', JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: output }) + '\n');
+        } else {
+          await writeFile(join(workdir, 'response.md'), output);
+        }
+        proc.stderr.emit('data', `attempt ${attempt} diagnostics\n`);
+        proc.emit('close', 0);
+      });
+      return { proc,
+        receipt: async () => ({ pid: attempt, termination: 'stopped', exit_code: 0 }),
+        stop: () => {},
+      };
+    });
+    try {
+      const task = await manager.run(engine, 'Analyze the supplied evidence', cwd, 10000, true,
+        false, undefined, 'medium', { inputs: [] });
+      assert.equal(attempts.length, 2);
+      assert.equal(task.status, recovers ? 'completed' : 'failed');
+      assert.equal(task.termination, 'stopped');
+      assert.equal(task.pid, 2);
+      assert.equal(manager.getTask(task.id), task);
+      assert.deepEqual(attempts[1].args.slice(0, -1), attempts[0].args.slice(0, -1));
+      assert.match(attempts[1].args.at(-1), /native tool/i);
+      assert.equal(attempts[1].workdir, attempts[0].workdir);
+      assert.deepEqual(attempts[1].env, attempts[0].env);
+      assert.notEqual(attempts[1].launchFile, attempts[0].launchFile);
+      assert.match(task.stdout, /attempt 1 diagnostics/);
+      assert.match(task.stdout, /attempt 2 diagnostics/);
+      assert.equal((await readdir(join(cwd, '.syndic'))).filter(name => name.endsWith('.prompt')).length, 1);
+      if (recovers) {
+        assert.equal(task.error, null);
+        assert.equal(task.outputContent, report);
+        assert.match(await readFile(join(cwd, '.syndic', `${task.id}.md`), 'utf8'), /status: completed/);
+      } else {
+        assert.match(task.error, /literal tool invocation/i);
+        assert.equal(task.outputContent, null);
+        assert.equal(task.sentinelContent, null);
+        await assert.rejects(readFile(join(cwd, '.syndic', `${task.id}.md`)), { code: 'ENOENT' });
+      }
+    } finally { await manager.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+  });
+}
 
 test('cancel waits for exit evidence, unknown termination stays retryable', async () => {
   const cwd = await mkdtemp(join(process.cwd(), '.syndic-lifecycle-'));

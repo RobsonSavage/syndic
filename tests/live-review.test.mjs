@@ -4,6 +4,45 @@ import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { EngineManager } from '../dist/engine.js';
+import { EventEmitter } from 'node:events';
+import { launchProcess } from '../dist/process.js';
+
+test('Fable recovers from a replayed malformed response using real review tools', {
+  skip: process.env.SYNDIC_TEST_LIVE !== '1', timeout: 180000,
+}, async () => {
+  const cwd = await mkdtemp(join(process.cwd(), '.syndic-live-'));
+  let attempts = 0;
+  const manager = new EngineManager(async (...args) => {
+    if (++attempts > 1) return launchProcess(...args);
+    const proc = new EventEmitter();
+    proc.stdout = new EventEmitter(); proc.stderr = new EventEmitter();
+    setImmediate(() => {
+      proc.stdout.emit('data', JSON.stringify({ type: 'result', subtype: 'success', is_error: false,
+        result: '<invoke name="mcp__syndic_review__review_status"></invoke>' }) + '\n');
+      proc.emit('close', 0);
+    });
+    return { proc, receipt: async () => ({ pid: 1, termination: 'stopped', exit_code: 0 }), stop() {} };
+  });
+  try {
+    const evidence = join(cwd, 'evidence.txt');
+    await writeFile(evidence, 'Recovery evidence code: 638241');
+    const task = await manager.run('claude',
+      'Read the supplied evidence.txt using the review tools. Return its recovery evidence code in a report under 100 words.',
+      process.cwd(), 150000, true, false, 'fable', 'medium', { inputs: [evidence] });
+    assert.equal(attempts, 2);
+    assert.equal(task.termination, 'stopped', task.stdout);
+    assert.equal(task.status, 'completed', task.stdout);
+    assert.match(task.outputContent, /638241/);
+    const events = task.stdout.split(/\r?\n/).flatMap(line => {
+      try { return [JSON.parse(line)]; } catch { return []; }
+    });
+    assert.ok(events.some(event => event.type === 'assistant' && event.message?.content?.some(block =>
+      block.type === 'tool_use' && block.name === 'mcp__syndic_review__read_file')));
+    assert.ok(events.some(event => event.type === 'user' && event.message?.content?.some(block =>
+      block.type === 'tool_result' && !block.is_error)));
+    assert.ok(task.observed.model);
+  } finally { await manager.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
 
 test('Fable attributes working-tree changes and finds supplied Roslyn snapshots', {
   skip: process.env.SYNDIC_TEST_LIVE !== '1', timeout: 180000,

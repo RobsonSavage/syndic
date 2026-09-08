@@ -187,6 +187,16 @@ The reviewer returns Markdown in its final response; syndic writes the output an
 sentinel after the CLI exits. The coordinator validates coverage and saves/publishes
 the report. A transport success is not evidence of a complete review.
 
+Claude review launches preserve the CLI's built-in tool guidance and append the
+review instructions; personal and project instruction files remain disabled.
+If a review returns literal tool invocation text, syndic retries once after
+confirming the first process job has stopped. The retry keeps the task ID, model,
+permissions and original timeout, and asks the CLI to make native tool calls.
+Syndic never executes the printed invocation text. A second malformed response
+fails the task. Rejected responses are retained as
+`.syndic/<id>.attempt-1.invalid-output.md` and, if needed,
+`.syndic/<id>.attempt-2.invalid-output.md`.
+
 Review mode automatically uses `%LOCALAPPDATA%/RoslynMcp/RoslynMcp.Server.exe`,
 the standard per-user installation. Supply `review_roslyn` to override that launcher
 for a custom installation. Executables are never discovered from the reviewed

@@ -4,7 +4,7 @@ import { join, resolve } from 'node:path';
 import { nanoid } from 'nanoid';
 import { launchProcess, type ManagedProcess } from './process.js';
 import { parseSentinel } from './sentinel.js';
-import { prepareReview, type ReviewOptions, type ReviewLaunch } from './review.js';
+import { prepareReview, LiteralToolInvocationError, type ReviewOptions, type ReviewLaunch } from './review.js';
 import {
   type Task,
   type TaskStatus,
@@ -94,6 +94,8 @@ export class EngineManager {
   private finishing = new Map<string, Promise<void>>();
   private reviews = new Map<string, ReviewLaunch>();
   private streams = new Map<string, { stdout: string; stderr: string }>();
+  private reviewRetries = new Map<string, () => Promise<void>>();
+  private retrying = new Map<string, Promise<void>>();
   private watchers = new Map<string, FSWatcher>();
   private timeouts = new Map<string, ReturnType<typeof setTimeout>>();
   private waitResolvers = new Map<string, (task: Task) => void>();
@@ -229,6 +231,48 @@ export class EngineManager {
       this.tasks.delete(taskId);
       throw error;
     }
+    this.attachProcess(task, managed, syndicDir);
+    if (reviewer) {
+      this.reviewRetries.set(taskId, async () => {
+        await reviewer.reset();
+        if (task.status !== 'running') return;
+        const retryArgs = [...spawnArgs.slice(0, -1), spawnArgs.at(-1) +
+          '. The previous attempt returned literal tool invocation text and did not complete. ' +
+          'Use native tool calls to invoke the available tools and wait for their results. ' +
+          'Do not print XML or JSON as a substitute for invoking a tool. Complete the review and return the report.'];
+        const retry = await this.launchProcessImpl(config.command, retryArgs, reviewer.cwd, reviewer.env,
+          join(syndicDir, `${taskId}.retry.launch.json`));
+        // Register even if cancellation arrived during launch. The finisher waits
+        // for this operation, then stops the newly registered process job.
+        task.observed = { model: null, reasoning_effort: null, source: null };
+        this.attachProcess(task, retry, syndicDir);
+      });
+    }
+
+    // --- watch for sentinel file ---
+    if (!reviewer) this.startSentinelWatch(taskId, syndicDir, sentinelFile);
+
+    // One timeout covers both attempts.
+    const timer = setTimeout(() => {
+      if (task.status === 'running') {
+        void this.completeTask(taskId, 'timed_out', null, null, `Timed out after ${timeout}ms`);
+      }
+    }, timeout);
+    this.timeouts.set(taskId, timer);
+
+    // --- optional synchronous wait ---
+    if (wait) {
+      if (task.status !== 'running') return task;
+      return new Promise<Task>((res) => {
+        this.waitResolvers.set(taskId, res);
+      });
+    }
+
+    return task;
+  }
+
+  private attachProcess(task: Task, managed: ManagedProcess, syndicDir: string): void {
+    const taskId = task.id;
     const proc = managed.proc;
     proc.stdout?.setEncoding?.('utf8');
     proc.stderr?.setEncoding?.('utf8');
@@ -246,42 +290,24 @@ export class EngineManager {
       streams.stderr += chunk.toString();
     });
 
-    // --- watch for sentinel file ---
-    if (!reviewer) this.startSentinelWatch(taskId, syndicDir, sentinelFile);
-
     // --- process lifecycle ---
     this.closed.set(taskId, new Promise<void>(resolveClosed => {
       proc.once('close', () => {
         resolveClosed();
         void managed.receipt().then(receipt => {
+          if (this.processes.get(taskId) !== managed) return;
           task.pid = receipt?.pid ?? null;
           if (task.status === 'running') {
-            void this.handleProcessExit(taskId, receipt?.exit_code ?? null, join(syndicDir, sentinelFile), syndicDir);
+            void this.handleProcessExit(taskId, receipt?.exit_code ?? null, join(syndicDir, `${taskId}.md`), syndicDir);
           }
         });
       });
     }));
     proc.on('error', (err) => {
-      void this.completeTask(taskId, 'failed', null, null, `Spawn error: ${err.message}`);
-    });
-
-    // --- timeout ---
-    const timer = setTimeout(() => {
-      if (task.status === 'running') {
-        void this.completeTask(taskId, 'timed_out', null, null, `Timed out after ${timeout}ms`);
+      if (this.processes.get(taskId) === managed) {
+        void this.completeTask(taskId, 'failed', null, null, `Spawn error: ${err.message}`);
       }
-    }, timeout);
-    this.timeouts.set(taskId, timer);
-
-    // --- optional synchronous wait ---
-    if (wait) {
-      if (task.status !== 'running') return task;
-      return new Promise<Task>((res) => {
-        this.waitResolvers.set(taskId, res);
-      });
-    }
-
-    return task;
+    });
   }
 
   getTask(taskId: string): Task | undefined {
@@ -375,12 +401,37 @@ export class EngineManager {
       try {
         if (code !== 0) throw new Error(`Review CLI exited with code ${code}`);
         const output = await reviewer.result();
+        if (task.status !== 'running') return;
         const sentinel = '---\nstatus: completed\n---\n\n## Summary\nReview report captured by syndic.\n';
         await writeFile(join(syndicDir, `${taskId}.output.md`), output, 'utf8');
         await writeFile(sentinelFilePath, sentinel, 'utf8');
         await this.completeTask(taskId, 'completed', sentinel, output, null);
       } catch (error) {
-        await this.completeTask(taskId, 'failed', null, null, error instanceof Error ? error.message : String(error));
+        if (task.status !== 'running') return;
+        if (error instanceof LiteralToolInvocationError) {
+          try {
+            const retry = this.reviewRetries.get(taskId);
+            await writeFile(join(syndicDir, `${taskId}.attempt-${retry ? 1 : 2}.invalid-output.md`), error.output, 'utf8');
+            const receipt = await this.processes.get(taskId)?.receipt();
+            if (task.status !== 'running') return;
+            if (retry && receipt?.termination === 'stopped') {
+              this.reviewRetries.delete(taskId);
+              const warning = `[WARN] Review task ${taskId} returned literal tool invocations; retrying once with native tool instructions.\n`;
+              process.stderr.write(warning);
+              task.stdout += warning;
+              const pending = retry();
+              this.retrying.set(taskId, pending);
+              try { await pending; } finally { this.retrying.delete(taskId); }
+              return;
+            }
+          } catch (retryError) {
+            error = retryError;
+          }
+        }
+        if (task.status !== 'running') return;
+        const message = error instanceof Error ? error.message : String(error);
+        process.stderr.write(`[ERROR] Review task ${taskId}: ${message}\n`);
+        await this.completeTask(taskId, 'failed', null, null, message);
       }
       return;
     }
@@ -434,6 +485,10 @@ export class EngineManager {
     task.termination = 'stopping';
     process.stderr.write(`[INFO] Stopping task ${taskId}; outcome=${status}\n`);
     this.cleanup(taskId);
+    // Cancellation can arrive while the replacement process is being launched.
+    // Wait until it is registered so this stop cannot leave it running.
+    try { await this.retrying.get(taskId); } catch { /* launch failure is handled by the caller */ }
+    this.reviewRetries.delete(taskId);
     const managed = this.processes.get(taskId);
     managed?.stop();
     let timer: ReturnType<typeof setTimeout> | undefined;
