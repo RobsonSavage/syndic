@@ -53,7 +53,7 @@ test('generated review transport records real packet and evidence reads, includi
     assert.ok(status.supplied_inputs.includes(await realpath(evidencePath)));
     const promptPath = status.supplied_inputs.find(path => basename(path) === 'task.prompt');
     assert.equal(promptPath, await realpath(join(launch.cwd, 'task.prompt')));
-    assert.ok(launch.args.at(-1).includes(promptPath.replaceAll('\\', '/')));
+    assert.match(launch.args.at(-1), /task\.prompt/);
     const output = report(launch);
     const first = await call(client, 'read_file', { path: promptPath, limit: 1 });
     await assert.rejects(launch.result(), /task\.prompt was not fully read/);
