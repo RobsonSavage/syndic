@@ -175,6 +175,14 @@ The broker exposes tracked-file listing and bounded reads, explicit evidence-fil
 reads, diffs between full SHAs (external diff/textconv disabled), and repository
 status. Paths escaping the source root are denied unless explicitly supplied as
 review inputs. It has no arbitrary command, write, publication, or memory tools.
+`review_status` lists all supplied inputs, including snapshots outside the repository
+that do not appear in `list_files`. `read_file` labels current disk reads as
+`working_tree` or `supplied_input`, with a resolved path and no asserted revision.
+Tracked-file access does not mean committed HEAD contents; the reported HEAD is
+repository metadata, and reads are not frozen against concurrent edits. Only
+`git_diff` compares committed revisions. Reviewers are instructed to inspect the
+input inventory and relevant supplied evidence before reporting missing coverage.
+Unavailable Roslyn semantic tools do not make supplied Roslyn scripts unavailable.
 The reviewer returns Markdown in its final response; syndic writes the output and
 sentinel after the CLI exits. The coordinator validates coverage and saves/publishes
 the report. A transport success is not evidence of a complete review.

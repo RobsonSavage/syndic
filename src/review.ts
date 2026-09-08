@@ -38,11 +38,20 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
   };
   try {
     const promptPath = join(cwd, 'task.prompt');
-    await writeFile(promptPath, prompt + '\n\nReturn the complete Markdown report as your final response. Syndic saves it. Do not write files.\n', 'utf8');
+    const evidenceProtocol = [
+      'Syndic evidence protocol:',
+      'Call review_status before inspecting evidence. Its supplied_inputs inventory includes files outside list_files.',
+      'read_file reads current disk contents, not committed HEAD or index blobs. A tracked path is an access rule, not revision provenance.',
+      'Attribute reads to working_tree or supplied_input as returned. A snapshot filename or matching contents does not prove a commit. git_diff compares only the requested commits.',
+      'Check supplied_inputs and read relevant supplied files before claiming evidence is unavailable. Roslyn tool availability is separate from supplied Roslyn source snapshots.',
+      'In the report, identify evidence used and relevant evidence left unread, including failed reads and unread line ranges. Unread evidence is not unavailable evidence.',
+      'Return the complete Markdown report as your final response. Syndic saves it. Do not write files.',
+    ].join('\n');
+    await writeFile(promptPath, prompt + '\n\n' + evidenceProtocol + '\n', 'utf8');
     await writeFile(join(cwd, 'access.json'), JSON.stringify({ root, inputs: [...inputs, promptPath], roslyn: options.roslyn }), 'utf8');
     const server = { command: process.execPath, args: [fileURLToPath(new URL('./review-server.js', import.meta.url)), join(cwd, 'access.json')] };
     const env = { ...reviewEnvironment(process.env), MSYS2_ARG_CONV_EXCL: '*', CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1' };
-    const boot = `Use the syndic_review read_file tool to read ${promptPath.replaceAll('\\', '/')} and perform that review. Return the report in your final response`;
+    const boot = `Call syndic_review review_status for the supplied-input inventory and read semantics, then use read_file to read ${promptPath.replaceAll('\\', '/')} and perform that review. Return the report in your final response`;
     let args: string[];
     if (engine === 'claude') {
       await writeFile(join(cwd, 'mcp.json'), JSON.stringify({ mcpServers: { syndic_review: server } }), 'utf8');

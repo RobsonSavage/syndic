@@ -62,9 +62,9 @@ if (cfg.roslyn) {
 }
 
 const tools: Tool[] = [
-  { name: 'review_status', description: 'Repository HEAD/status and semantic-tool availability.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'review_status', description: 'Repository HEAD/status, complete supplied-input inventory, read semantics and semantic-tool availability. Check before reviewing.', inputSchema: { type: 'object', properties: {} } },
   { name: 'list_files', description: 'List tracked source paths by optional prefix with pagination; total includes unread pages.', inputSchema: { type: 'object', properties: { prefix: { type: 'string' }, offset: { type: 'integer' }, limit: { type: 'integer' } } } },
-  { name: 'read_file', description: 'Read tracked source or a coordinator-supplied input, with 1-based lines.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'integer' }, limit: { type: 'integer' } }, required: ['path'] } },
+  { name: 'read_file', description: 'Read current disk contents of a tracked working-tree file or supplied input, with provenance and 1-based lines. This does not read committed HEAD or the index. Supplied paths are listed by review_status.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'integer' }, limit: { type: 'integer' } }, required: ['path'] } },
   { name: 'git_diff', description: 'Read a diff between full commit SHAs, with external diff and textconv disabled.', inputSchema: { type: 'object', properties: { base: { type: 'string' }, head: { type: 'string' } }, required: ['base', 'head'] } },
   ...semantic,
 ];
@@ -76,7 +76,10 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
     const args = request.params.arguments ?? {};
     switch (request.params.name) {
       case 'review_status': return reply({ root, head: (await access.git(['rev-parse', 'HEAD'])).trim(),
-        status: await access.git(['status', '--porcelain']), roslyn_error: roslynError || null });
+        status: await access.git(['status', '--porcelain']),
+        read_semantics: 'read_file returns current disk contents, not HEAD or index blobs. HEAD is repository metadata only. Reads are not an immutable snapshot. git_diff compares committed revisions only.',
+        supplied_inputs: access.listInputs(),
+        roslyn_error: roslynError || null });
       case 'list_files': {
         const offset = args.offset ?? 0;
         const limit = args.limit ?? 500;

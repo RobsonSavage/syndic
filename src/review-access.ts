@@ -30,6 +30,8 @@ export class ReviewAccess {
 
   list(prefix = ''): string[] { return [...this.files].filter(path => path.startsWith(prefix)); }
 
+  listInputs(): string[] { return [...this.inputs]; }
+
   async read(path: string, offset = 1, limit = 200): Promise<object> {
     const full = await realpath(resolve(this.root, path));
     const rel = relative(this.root, full).split(sep).join('/');
@@ -43,7 +45,10 @@ export class ReviewAccess {
     const text = await readFile(full, 'utf8');
     if (text.includes('\0')) throw new Error('Binary file; report a coverage gap');
     const lines = text.split(/\r?\n/);
-    return { path, total_lines: lines.length, offset, lines: lines.slice(offset - 1, offset - 1 + limit) };
+    return { path, resolved_path: full,
+      source: this.inputs.has(full) ? 'supplied_input' : 'working_tree',
+      revision: null,
+      total_lines: lines.length, offset, lines: lines.slice(offset - 1, offset - 1 + limit) };
   }
 
   async diff(base: string, head: string): Promise<string> {
