@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
@@ -124,12 +124,18 @@ test('codex records the launch banner outside review mode', async () => {
     });
     return { proc, receipt: async () => ({ pid: 7, termination: 'stopped', exit_code: 0 }), stop: () => {} };
   });
+  // No model table in an empty CODEX_HOME, so this keeps testing the banner alone whatever this machine's Codex lists.
+  const codexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = cwd;
   try {
     const task = await manager.run('codex', 'Inspect the task', cwd, 10000, true);
     assert.deepEqual(task.launch, { model: null, reasoning_effort: null, mode: 'default' });
     assert.deepEqual(task.observed,
       { model: 'gpt-6-astra', reasoning_effort: 'none', source: 'CLI launch banner' });
-  } finally { await manager.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+  } finally {
+    if (codexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = codexHome;
+    await manager.shutdown(); await rm(cwd, { recursive: true, force: true });
+  }
 });
 
 // A watcher that can only read files sees the model while the task runs, not after it ends.
@@ -218,4 +224,57 @@ test('a call_tag also keys observed.json, so a wait=true caller can read it befo
     assert.deepEqual(seen, { model: 'gpt-live-2', reasoning_effort: 'low', source: 'CLI launch banner' });
     assert.deepEqual(JSON.parse(await readFile(join(cwd, '.syndic', `${task.id}.observed.json`), 'utf8')), seen);
   } finally { await manager.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('codex banner "none" with no effort requested becomes the model table default, and only then', async () => {
+  const cwd = await mkdtemp(join(process.cwd(), '.syndic-default-'));
+  const { EngineManager } = await import('../dist/engine.js');
+  const home = join(cwd, 'home');
+  const table = join(home, 'models_cache.json');
+  await mkdir(home);
+  await writeFile(table, JSON.stringify({ models: [
+    { slug: 'gpt-table-1', default_reasoning_level: 'low' },
+    { slug: 'gpt-table-2', default_reasoning_level: 'medium' },
+    { slug: 'gpt-no-default' },
+  ] }), 'utf8');
+  const observe = async (model, effort) => {
+    const manager = new EngineManager(async () => {
+      const proc = new EventEmitter();
+      proc.stdout = new EventEmitter(); proc.stderr = new EventEmitter();
+      setImmediate(() => {
+        proc.stderr.emit('data', `model: ${model}\nreasoning effort: none\n`);
+        proc.emit('close', 0);
+      });
+      return { proc, receipt: async () => ({ pid: 9, termination: 'stopped', exit_code: 0 }), stop: () => {} };
+    });
+    try {
+      return (await manager.run('codex', 'Inspect the task', cwd, 10000, true, false, undefined, effort)).observed;
+    } finally { await manager.shutdown(); }
+  };
+  const touch = async seconds => {
+    const when = new Date(Date.now() + seconds * 1000);
+    await utimes(table, when, when);
+  };
+  const codexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = home;
+  try {
+    const source = 'CLI launch banner, effort from the Codex model table default';
+    assert.deepEqual(await observe('gpt-table-1'), { model: 'gpt-table-1', reasoning_effort: 'low', source });
+    assert.deepEqual(await observe('gpt-table-2'), { model: 'gpt-table-2', reasoning_effort: 'medium', source });
+    assert.deepEqual(await observe('gpt-table-2', 'default'), { model: 'gpt-table-2', reasoning_effort: 'medium', source });
+    // An effort the caller set is the banner's own, and a model the table lacks keeps the banner value.
+    assert.deepEqual(await observe('gpt-table-1', 'none'), { model: 'gpt-table-1', reasoning_effort: 'none', source: 'CLI launch banner' });
+    assert.deepEqual(await observe('gpt-unlisted'), { model: 'gpt-unlisted', reasoning_effort: 'none', source: 'CLI launch banner' });
+    assert.deepEqual(await observe('gpt-no-default'), { model: 'gpt-no-default', reasoning_effort: 'none', source: 'CLI launch banner' });
+    // A table that changes is read again, and an unreadable one leaves the banner value.
+    await writeFile(table, JSON.stringify({ models: [{ slug: 'gpt-table-1', default_reasoning_level: 'high' }] }), 'utf8');
+    await touch(5);
+    assert.equal((await observe('gpt-table-1')).reasoning_effort, 'high');
+    await writeFile(table, '{ not json', 'utf8');
+    await touch(10);
+    assert.equal((await observe('gpt-table-1')).reasoning_effort, 'none');
+  } finally {
+    if (codexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = codexHome;
+    await rm(cwd, { recursive: true, force: true });
+  }
 });

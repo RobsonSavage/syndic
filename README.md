@@ -131,6 +131,10 @@ All responses include `requested` model/effort, `launch` settings/mode, `observe
 CLI metadata with provenance, `pid`, `termination`, and `termination_error`.
 Observed metadata may be unavailable (null). It is never filled from the request
 or model self-description. A CLI banner/event is not provider attestation.
+One exception: Codex's banner prints `none` for an effort nobody set, and Codex then runs the
+model's default. With no effort requested, `observed.reasoning_effort` is that default, read
+from `models_cache.json` in `CODEX_HOME` (else `~/.codex`), and `observed.source` says so. A
+missing table or unlisted model leaves `none`.
 `termination` is `running`, `stopping`, `stopped`, or `unknown`. Only `stopped`
 confirms that the supervised job contains no active processes.
 
