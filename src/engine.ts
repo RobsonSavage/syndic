@@ -131,6 +131,7 @@ export class EngineManager {
     reasoningEffort?: string,
     review?: ReviewOptions,
     skipGitRepoCheck?: boolean,
+    callTag?: string,
   ): Promise<Task> {
     if (review && (yolo || (engine !== 'claude' && engine !== 'codex'))) {
       throw new Error('Review mode requires Claude or Codex and yolo=false');
@@ -140,6 +141,10 @@ export class EngineManager {
       if (value !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(value)) {
         throw new Error(`Invalid ${name}: expected a non-empty model or effort identifier.`);
       }
+    }
+    // The tag becomes a file name beside the task's own files.
+    if (callTag !== undefined && !/^[A-Za-z0-9_-]{1,64}$/.test(callTag)) {
+      throw new Error('Invalid call_tag: expected 1-64 letters, digits, underscores or hyphens.');
     }
     // Callers read "omit to use the CLI default" and send the word instead.
     // Forwarded as an identifier it reaches the provider, which rejects it
@@ -217,6 +222,7 @@ export class EngineManager {
       requested: { model: model ?? null, reasoning_effort: reasoningEffort ?? null },
       launch: { model: launchModel ?? null, reasoning_effort: launchEffort ?? null, mode: reviewer ? 'review' : yolo ? 'unrestricted' : 'default' },
       observed: { model: null, reasoning_effort: null, source: null },
+      callTag,
     };
     this.tasks.set(taskId, task);
 
@@ -351,7 +357,11 @@ export class EngineManager {
     if (model !== null && (task.engine !== 'codex' || effort !== null)) return;
     this.observeLaunch(task);
     if (task.observed.model === model && task.observed.reasoning_effort === effort) return;
-    void writeFile(join(syndicDir, `${task.id}.observed.json`), JSON.stringify(task.observed), 'utf8').catch(() => {});
+    // A wait=true caller gets no task id until the task ends, so the file is also written under the tag it chose.
+    const body = JSON.stringify(task.observed);
+    for (const name of [task.id, task.callTag]) {
+      if (name) void writeFile(join(syndicDir, `${name}.observed.json`), body, 'utf8').catch(() => {});
+    }
   }
 
   private observeLaunch(task: Task): void {

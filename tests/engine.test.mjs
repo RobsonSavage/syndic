@@ -190,3 +190,32 @@ test('codex rewrites observed.json when the effort line arrives after the model 
     assert.equal(task.status, 'running');
   } finally { await manager.shutdown(); await rm(cwd, { recursive: true, force: true }); }
 });
+
+test('a call_tag also keys observed.json, so a wait=true caller can read it before the task id exists', async () => {
+  const cwd = await mkdtemp(join(process.cwd(), '.syndic-live-'));
+  const { EngineManager } = await import('../dist/engine.js');
+  let proc;
+  const manager = new EngineManager(async () => {
+    proc = new EventEmitter();
+    proc.stdout = new EventEmitter(); proc.stderr = new EventEmitter();
+    let stopped = false;
+    return { proc, receipt: async () => ({ pid: 8, termination: stopped ? 'stopped' : 'running', exit_code: stopped ? 1 : null }),
+      stop: () => { stopped = true; queueMicrotask(() => proc.emit('close', 1)); } };
+  });
+  try {
+    for (const tag of ['', 'a b', 'a/b', '..', 'x'.repeat(65)]) {
+      await assert.rejects(manager.run('codex', 'Inspect the task', cwd, 10000, false, false, undefined, undefined,
+        undefined, undefined, tag), /Invalid call_tag/);
+    }
+    const task = await manager.run('codex', 'Inspect the task', cwd, 10000, false, false, undefined, undefined,
+      undefined, undefined, 'toolu_01-abc');
+    const tagged = join(cwd, '.syndic', 'toolu_01-abc.observed.json');
+    proc.stderr.emit('data', 'model: gpt-live-2\nreasoning effort: low\n');
+    const seen = await until(async () => {
+      const value = JSON.parse(await readFile(tagged, 'utf8'));
+      return value.reasoning_effort === 'low' ? value : null;
+    });
+    assert.deepEqual(seen, { model: 'gpt-live-2', reasoning_effort: 'low', source: 'CLI launch banner' });
+    assert.deepEqual(JSON.parse(await readFile(join(cwd, '.syndic', `${task.id}.observed.json`), 'utf8')), seen);
+  } finally { await manager.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});

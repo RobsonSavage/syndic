@@ -40,6 +40,8 @@ export interface Task {
   requested: { model: string | null; reasoning_effort: string | null };
   launch: { model: string | null; reasoning_effort: string | null; mode: string };
   observed: { model: string | null; reasoning_effort: string | null; source: string | null };
+  /** Caller-chosen name that also keys .syndic/{callTag}.observed.json, so a watcher can find the file before it knows the task id. */
+  callTag?: string;
 }
 
 export const ENGINE_CONFIGS: Record<EngineType, EngineConfig> = {
