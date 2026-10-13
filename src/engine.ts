@@ -315,10 +315,12 @@ export class EngineManager {
     proc.stdout?.on('data', (chunk: Buffer) => {
       task.stdout += chunk.toString();
       streams.stdout += chunk.toString();
+      this.observeLive(task, syndicDir);
     });
     proc.stderr?.on('data', (chunk: Buffer) => {
       task.stdout += chunk.toString();
       streams.stderr += chunk.toString();
+      this.observeLive(task, syndicDir);
     });
 
     // --- process lifecycle ---
@@ -339,6 +341,17 @@ export class EngineManager {
         void this.completeTask(taskId, 'failed', null, null, `Spawn error: ${err.message}`);
       }
     });
+  }
+
+  // The CLI states its model in the first second, so a running task records it then and not only at exit.
+  // <taskId>.observed.json beside the receipt carries it to watchers that cannot call syndic_status (they read files).
+  // Codex prints the model and the effort on separate banner lines, so it keeps observing until it has both.
+  private observeLive(task: Task, syndicDir: string): void {
+    const { model, reasoning_effort: effort } = task.observed;
+    if (model !== null && (task.engine !== 'codex' || effort !== null)) return;
+    this.observeLaunch(task);
+    if (task.observed.model === model && task.observed.reasoning_effort === effort) return;
+    void writeFile(join(syndicDir, `${task.id}.observed.json`), JSON.stringify(task.observed), 'utf8').catch(() => {});
   }
 
   private observeLaunch(task: Task): void {

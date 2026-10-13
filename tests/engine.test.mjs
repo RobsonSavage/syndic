@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { mkdtemp, readdir, rm } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
@@ -129,5 +129,64 @@ test('codex records the launch banner outside review mode', async () => {
     assert.deepEqual(task.launch, { model: null, reasoning_effort: null, mode: 'default' });
     assert.deepEqual(task.observed,
       { model: 'gpt-6-astra', reasoning_effort: 'none', source: 'CLI launch banner' });
+  } finally { await manager.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+// A watcher that can only read files sees the model while the task runs, not after it ends.
+const until = async (check) => {
+  for (let i = 0; i < 200; i++) {
+    try { const value = await check(); if (value) return value; } catch { /* not there yet */ }
+    await new Promise(resolve => setTimeout(resolve, 10));
+  }
+  throw new Error('condition not met within 2s');
+};
+
+test('claude in review mode writes observed.json when the init event arrives, before the task ends', async () => {
+  const cwd = await mkdtemp(join(process.cwd(), '.syndic-live-'));
+  const { EngineManager } = await import('../dist/engine.js');
+  let proc;
+  const manager = new EngineManager(async () => {
+    proc = new EventEmitter();
+    proc.stdout = new EventEmitter(); proc.stderr = new EventEmitter();
+    let stopped = false;
+    return { proc, receipt: async () => ({ pid: 5, termination: stopped ? 'stopped' : 'running', exit_code: stopped ? 1 : null }),
+      stop: () => { stopped = true; queueMicrotask(() => proc.emit('close', 1)); } };
+  });
+  try {
+    const task = await manager.run('claude', 'Review the supplied evidence', cwd, 10000, false,
+      false, undefined, undefined, { inputs: [] });
+    const file = join(cwd, '.syndic', `${task.id}.observed.json`);
+    await assert.rejects(readFile(file), { code: 'ENOENT' });
+    proc.stdout.emit('data', JSON.stringify({ type: 'system', subtype: 'init', model: 'claude-live-1' }) + '\n');
+    const written = await until(() => readFile(file, 'utf8'));
+    assert.deepEqual(JSON.parse(written), { model: 'claude-live-1', reasoning_effort: null, source: 'CLI system.init event' });
+    assert.equal(task.status, 'running');
+  } finally { await manager.shutdown(); await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('codex rewrites observed.json when the effort line arrives after the model line', async () => {
+  const cwd = await mkdtemp(join(process.cwd(), '.syndic-live-'));
+  const { EngineManager } = await import('../dist/engine.js');
+  let proc;
+  const manager = new EngineManager(async () => {
+    proc = new EventEmitter();
+    proc.stdout = new EventEmitter(); proc.stderr = new EventEmitter();
+    let stopped = false;
+    return { proc, receipt: async () => ({ pid: 6, termination: stopped ? 'stopped' : 'running', exit_code: stopped ? 1 : null }),
+      stop: () => { stopped = true; queueMicrotask(() => proc.emit('close', 1)); } };
+  });
+  try {
+    const task = await manager.run('codex', 'Inspect the task', cwd, 10000, false);
+    const file = join(cwd, '.syndic', `${task.id}.observed.json`);
+    proc.stderr.emit('data', 'model: gpt-live-1\n');
+    assert.deepEqual(JSON.parse(await until(() => readFile(file, 'utf8'))),
+      { model: 'gpt-live-1', reasoning_effort: null, source: 'CLI launch banner' });
+    proc.stderr.emit('data', 'reasoning effort: high\n');
+    const both = await until(async () => {
+      const value = JSON.parse(await readFile(file, 'utf8'));
+      return value.reasoning_effort === 'high' ? value : null;
+    });
+    assert.deepEqual(both, { model: 'gpt-live-1', reasoning_effort: 'high', source: 'CLI launch banner' });
+    assert.equal(task.status, 'running');
   } finally { await manager.shutdown(); await rm(cwd, { recursive: true, force: true }); }
 });
