@@ -1,5 +1,6 @@
-import { watch, type FSWatcher } from 'node:fs';
+import { readFileSync, statSync, watch, type FSWatcher } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { nanoid } from 'nanoid';
 import { launchProcess, type ManagedProcess } from './process.js';
@@ -36,7 +37,38 @@ function observeCodexBanner(task: Task, stderr: string): void {
   const model = /^model:\s*(\S+)\s*$/m.exec(stderr)?.[1];
   const effort = /^reasoning effort:\s*(\S+)\s*$/m.exec(stderr)?.[1];
   if (model || effort) {
-    task.observed = { model: model ?? null, reasoning_effort: effort ?? null, source: 'CLI launch banner' };
+    // The banner prints "none" for an effort nobody set. Codex then runs the turn at the model's default from its own
+    // model table (its turn spans showed low for gpt-6.1-sol and medium for gpt-6-luna, the table's values).
+    const resolved = effort === 'none' && model && task.launch.reasoning_effort === null ? codexDefaultEffort(model) : undefined;
+    task.observed = {
+      model: model ?? null,
+      reasoning_effort: resolved ?? effort ?? null,
+      source: resolved ? 'CLI launch banner, effort from the Codex model table default' : 'CLI launch banner',
+    };
+  }
+}
+
+// Codex's model table: its models_cache.json lists each model's default_reasoning_level. Re-read only when the file changes.
+// shortcut: a missing or unreadable table leaves the banner value, when Codex moves the table, update the path.
+let codexModelTable: { path: string; mtimeMs: number; defaults: Map<string, string> } | undefined;
+
+function codexDefaultEffort(model: string): string | undefined {
+  try {
+    const path = join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'models_cache.json');
+    const { mtimeMs } = statSync(path);
+    if (codexModelTable?.path !== path || codexModelTable.mtimeMs !== mtimeMs) {
+      const models = JSON.parse(readFileSync(path, 'utf8')).models;
+      const defaults = new Map<string, string>();
+      for (const entry of (Array.isArray(models) ? models : []) as Array<{ slug?: unknown; default_reasoning_level?: unknown }>) {
+        if (typeof entry.slug === 'string' && typeof entry.default_reasoning_level === 'string') {
+          defaults.set(entry.slug, entry.default_reasoning_level);
+        }
+      }
+      codexModelTable = { path, mtimeMs, defaults };
+    }
+    return codexModelTable.defaults.get(model);
+  } catch {
+    return undefined;
   }
 }
 
