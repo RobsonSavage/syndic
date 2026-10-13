@@ -93,16 +93,24 @@ server.tool(
         'Whatever the engine writes there is outside revision control and cannot be reviewed or reverted. ' +
         'Default: false. Review mode always sets it; that reviewer is read-only and works in a temporary directory.',
       ),
+    call_tag: z
+      .string()
+      .optional()
+      .describe(
+        'Optional name for the call, 1-64 letters, digits, underscores or hyphens. While the task runs, its observed model and ' +
+        'effort are also written to .syndic/<call_tag>.observed.json, so a watcher of a wait=true call can find them without the task id. ' +
+        'Set by a client hook; leave unset otherwise.',
+      ),
     mode: z.enum(['default', 'review']).optional().describe('review: controlled read/semantic MCP tools, no shell or report-write tools; syndic captures the final report. Claude/Codex only.'),
     review_inputs: z.array(z.string()).optional().describe('Absolute paths to the factual packet/procedure/evidence the restricted reviewer may read, in addition to tracked source.'),
     review_roslyn: z.object({ command: z.string(), args: z.array(z.string()).optional() }).optional()
       .describe('Optional trusted Roslyn launcher override. By default review mode uses the per-user RoslynMcp installation and asks Roslyn to select the review root. Only semantic tools are exposed; no memory or mutations.'),
   },
-  async ({ engine, prompt, cwd, timeout_ms, wait, yolo, model, reasoning_effort, skip_git_repo_check, mode, review_inputs, review_roslyn }) => {
+  async ({ engine, prompt, cwd, timeout_ms, wait, yolo, model, reasoning_effort, skip_git_repo_check, call_tag, mode, review_inputs, review_roslyn }) => {
     try {
       if (mode !== 'review' && (review_inputs || review_roslyn)) throw new Error('Review options require mode=review');
       const task = await manager.run(engine, prompt, cwd, timeout_ms, wait, yolo, model, reasoning_effort,
-        mode === 'review' ? { inputs: review_inputs ?? [], roslyn: review_roslyn } : undefined, skip_git_repo_check);
+        mode === 'review' ? { inputs: review_inputs ?? [], roslyn: review_roslyn } : undefined, skip_git_repo_check, call_tag);
 
       if (wait && task.status !== 'running') {
         return {
