@@ -390,9 +390,11 @@ export class EngineManager {
     this.observeLaunch(task);
     if (task.observed.model === model && task.observed.reasoning_effort === effort) return;
     // A wait=true caller gets no task id until the task ends, so the file is also written under the tag it chose.
-    const body = JSON.stringify(task.observed);
+    // The tagged copy names the task as well, so that caller can follow the task's receipt if its call is moved to the background.
     for (const name of [task.id, task.callTag]) {
-      if (name) void writeFile(join(syndicDir, `${name}.observed.json`), body, 'utf8').catch(() => {});
+      if (!name) continue;
+      const body = JSON.stringify(name === task.id ? task.observed : { ...task.observed, task_id: task.id });
+      void writeFile(join(syndicDir, `${name}.observed.json`), body, 'utf8').catch(() => {});
     }
   }
 
