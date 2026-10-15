@@ -221,8 +221,10 @@ test('a call_tag also keys observed.json, so a wait=true caller can read it befo
       const value = JSON.parse(await readFile(tagged, 'utf8'));
       return value.reasoning_effort === 'low' ? value : null;
     });
-    assert.deepEqual(seen, { model: 'gpt-live-2', reasoning_effort: 'low', source: 'CLI launch banner' });
-    assert.deepEqual(JSON.parse(await readFile(join(cwd, '.syndic', `${task.id}.observed.json`), 'utf8')), seen);
+    const observed = { model: 'gpt-live-2', reasoning_effort: 'low', source: 'CLI launch banner' };
+    // The tagged copy also names the task, so a wait=true caller whose call was moved to the background can follow its receipt.
+    assert.deepEqual(seen, { ...observed, task_id: task.id });
+    assert.deepEqual(JSON.parse(await readFile(join(cwd, '.syndic', `${task.id}.observed.json`), 'utf8')), observed);
   } finally { await manager.shutdown(); await rm(cwd, { recursive: true, force: true }); }
 });
 

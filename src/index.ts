@@ -98,7 +98,7 @@ server.tool(
       .optional()
       .describe(
         'Optional name for the call, 1-64 letters, digits, underscores or hyphens. While the task runs, its observed model and ' +
-        'effort are also written to .syndic/<call_tag>.observed.json, so a watcher of a wait=true call can find them without the task id. ' +
+        'effort are also written to .syndic/<call_tag>.observed.json, with the task_id, so a watcher of a wait=true call can find them without the task id. ' +
         'Set by a client hook; leave unset otherwise.',
       ),
     mode: z.enum(['default', 'review']).optional().describe('review: controlled read/semantic MCP tools, no shell or report-write tools; syndic captures the final report. Claude/Codex only.'),
