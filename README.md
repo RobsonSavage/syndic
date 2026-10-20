@@ -85,6 +85,9 @@ Spawn an external AI CLI engine to execute a task.
 | `mode` | `"default" \| "review"` | No | `review` restricts Claude/Codex to source/semantic inspection and captures their final report. Requires `yolo: false`. |
 | `review_inputs` | `string[]` | No | Absolute paths to packet/procedure/evidence files the reviewer may read, in addition to tracked repository source. |
 | `review_roslyn` | `{command: string, args?: string[]}` | No | Override the automatic per-user Roslyn installation with a trusted absolute executable and arguments. Review mode only. |
+| `review_skills` | `string[]` | No | Skills the reviewer must read and apply, as `plugin:skill` or `skill`. Added to `review.skills` from the [defaults file](#defaults-skills-and-extra-mcp-servers). Review mode only. |
+| `review_mcp` | `{name: string, command: string, args?: string[], tools: string[], path_args?: Record<string, string[]>}[]` | No | Extra MCP servers the reviewer may call, each limited to `tools`. `command` must be an absolute path. `path_args` maps a tool to the argument names that carry file locations. Added to `review.mcp` from the defaults file; an entry with the same `name` replaces the default. Review mode only. |
+| `review_defaults` | `boolean` | No | `false` ignores the defaults file for this call. Review mode only. |
 
 For Codex with Astra at max effort, pass `engine="codex", model="gpt-6-astra", reasoning_effort="max"` to `syndic_run` along with the task prompt. These settings override the CLI defaults for that invocation. OpenCode receives the same fields through `--model` and `--variant`; use its provider/model identifier and a supported variant.
 
@@ -177,8 +180,9 @@ review MCP server is configured. Installed CLIs must support these controls;
 unsupported flags fail the run instead of falling back to default mode.
 
 The broker exposes tracked-file listing and bounded reads, explicit evidence-file
-reads, diffs between full SHAs (external diff/textconv disabled), and repository
-status. Paths escaping the source root are denied unless explicitly supplied as
+reads, diffs between full SHAs (external diff/textconv disabled), repository
+status, and `search_files` (a case-insensitive `git grep` over tracked files of every
+type, plain text or `regex: true`). Paths escaping the source root are denied unless explicitly supplied as
 review inputs. It has no arbitrary command, write, publication, or memory tools.
 `review_status` lists all supplied inputs, including snapshots outside the repository
 that do not appear in `list_files`. `read_file` labels current disk reads as
@@ -229,6 +233,71 @@ This is a tool-access boundary, not OS containment of a compromised CLI or seman
 server. Roslyn can evaluate project metadata and write caches. Use trusted tooling
 and source environments; do not put secrets in review evidence. The Windows job
 controls process lifetime, not network or filesystem privileges.
+
+### Defaults, skills and extra MCP servers
+
+Every review launch reads `~/.syndic/defaults.json`, or the file named by the
+`SYNDIC_DEFAULTS` environment variable:
+
+```json
+{
+  "review": {
+    "skills": ["ponytail:ponytail-review", "my-local-skill"],
+    "mcp": [
+      {
+        "name": "docs",
+        "command": "C:/tools/docs-mcp.exe",
+        "args": ["--stdio"],
+        "tools": ["read_doc", "list_docs"],
+        "path_args": { "read_doc": ["target"] }
+      }
+    ]
+  }
+}
+```
+
+The file is optional. A missing file adds nothing. An unreadable file, invalid JSON
+or an invalid entry never fails the call: the review runs without that part and
+`review_status.notes` says why. Pass `review_defaults: false` to ignore the file for
+one call. Entries from the call (`review_skills`, `review_mcp`) are added to the file's.
+
+**Skills.** `plugin:skill` is looked up in the plugin's install folder from
+`~/.claude/plugins/installed_plugins.json` (the newest cached version when the
+registry is missing). A bare `skill` is looked up in `~/.claude/skills`. Each
+`SKILL.md` becomes a supplied input and the reviewer is told to read and apply it.
+A name that cannot be found is reported in `review_status.notes` and the review still
+runs. Reading a skill does not satisfy the evidence check: when `review_inputs` is
+nonempty, a report still needs a read of one of those files.
+
+**Extra MCP servers.** The review broker starts each server from the review root on
+first use and exposes only the tools named in `tools`. Tool schemas are read once at
+launch (30 s limit per server). A tool its server declares as changing state
+(`readOnlyHint: false` or `destructiveHint: true`) is not offered. Upstream
+annotations are kept. A tool whose name is already taken by a broker tool or another
+server is skipped. `review_status.extra_tools` lists what is available, and each
+skipped tool or missing server is named in `review_status.notes`. A server name used
+twice keeps its last entry.
+
+Extra tools may read any file under the review root (tracked or not), the
+`review_inputs` files and the resolved skills. Nothing else. Before forwarding a
+call the broker checks its arguments, including nested values and object keys:
+
+- A string is a file location when its key names one (path, file, dir, uri, source,
+  target and similar), when `path_args` lists the key for that tool, or when its
+  shape says so: an absolute path, a `file:` URI, a `\\?\` or `\\.\` prefix, or a
+  `..` segment. Only `http(s)`, `ftp(s)` and `ws(s)` URLs are skipped.
+- A location must resolve, through links and junctions, to a path under the review
+  root or to a supplied input. A path that does not exist yet is judged by its
+  nearest existing parent.
+- These are refused: drive-relative values such as `C:name`, a path component with a
+  trailing dot or space or a colon, and reserved device names (`CON`, `NUL`,
+  `COM1` and the rest).
+
+The guard recognizes locations by name and shape, so it cannot know a tool's own
+argument rules. A location passed under an argument that is not path-like, not in
+`path_args` and not shaped like a path is not checked. List every such argument in
+`path_args`, and allow-list only tools you trust. The guard is a tool-access
+boundary, like the rest of review mode, and does not contain a compromised server.
 
 ## Completion protocol
 
