@@ -3,6 +3,7 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { EngineManager } from './engine.js';
+import { mcpProblem } from './defaults.js';
 import type { Task } from './types.js';
 import { readFileSync } from 'node:fs';
 
@@ -105,12 +106,19 @@ server.tool(
     review_inputs: z.array(z.string()).optional().describe('Absolute paths to the factual packet/procedure/evidence the restricted reviewer may read, in addition to tracked source.'),
     review_roslyn: z.object({ command: z.string(), args: z.array(z.string()).optional() }).optional()
       .describe('Optional trusted Roslyn launcher override. By default review mode uses the per-user RoslynMcp installation and asks Roslyn to select the review root. Only semantic tools are exposed; no memory or mutations.'),
+    review_skills: z.array(z.string()).optional()
+      .describe('Skills the reviewer must read and apply, as "plugin:skill" or "skill". Syndic finds each SKILL.md from the plugin registry and supplies it as a review input; a name it cannot find is reported in review_status and the review still runs. Added to review.skills from ~/.syndic/defaults.json.'),
+    review_mcp: z.array(z.object({ name: z.string(), command: z.string(), args: z.array(z.string()).optional(), tools: z.array(z.string()).min(1), path_args: z.record(z.array(z.string())).optional() })).optional()
+      .describe('Extra MCP servers the reviewer may call, each limited to the tools named in tools (tools their server declares as changing state are not offered). command must be an absolute path. These tools may read any file under cwd and the files in review_inputs. Syndic recognizes locations by argument name and by the shape of the value (absolute path, file: URI, ".."); list in path_args, per tool, every other argument name that carries a file location, and values under those names are always checked. Added to review.mcp from ~/.syndic/defaults.json; an entry with the same name replaces the default.'),
+    review_defaults: z.boolean().optional()
+      .describe('false ignores ~/.syndic/defaults.json (or the file named by SYNDIC_DEFAULTS) for this call.'),
   },
-  async ({ engine, prompt, cwd, timeout_ms, wait, yolo, model, reasoning_effort, skip_git_repo_check, call_tag, mode, review_inputs, review_roslyn }) => {
+  async ({ engine, prompt, cwd, timeout_ms, wait, yolo, model, reasoning_effort, skip_git_repo_check, call_tag, mode, review_inputs, review_roslyn, review_skills, review_mcp, review_defaults }) => {
     try {
-      if (mode !== 'review' && (review_inputs || review_roslyn)) throw new Error('Review options require mode=review');
+      if (mode !== 'review' && (review_inputs || review_roslyn || review_skills || review_mcp || review_defaults !== undefined)) throw new Error('Review options require mode=review');
+      if (review_mcp) for (const spec of review_mcp) { const problem = mcpProblem(spec); if (problem) throw new Error(`review_mcp: ${problem}`); }
       const task = await manager.run(engine, prompt, cwd, timeout_ms, wait, yolo, model, reasoning_effort,
-        mode === 'review' ? { inputs: review_inputs ?? [], roslyn: review_roslyn } : undefined, skip_git_repo_check, call_tag);
+        mode === 'review' ? { inputs: review_inputs ?? [], roslyn: review_roslyn, skills: review_skills, mcp: review_mcp, defaults: review_defaults } : undefined, skip_git_repo_check, call_tag);
 
       if (wait && task.status !== 'running') {
         return {
