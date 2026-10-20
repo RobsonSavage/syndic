@@ -6,10 +6,17 @@ import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SEMANTIC_TOOLS, type EngineType, type Task } from './types.js';
+import { loadReviewDefaults, mergeMcp, resolveSkills, type McpSpec } from './defaults.js';
 
 export interface ReviewOptions {
   inputs: string[];
   roslyn?: { command: string; args?: string[] };
+  /** Skill names ("plugin:skill" or "skill") whose SKILL.md the reviewer must read and apply. */
+  skills?: string[];
+  /** Extra MCP servers the reviewer may use, limited to the named tools. */
+  mcp?: McpSpec[];
+  /** false ignores the defaults file. */
+  defaults?: boolean;
 }
 
 export class LiteralToolInvocationError extends Error {
@@ -97,6 +104,42 @@ export async function semanticTools(roslyn: NonNullable<ReviewOptions['roslyn']>
   }
 }
 
+// Same fixed-inventory reason as semanticTools: Codex reads the tool list once,
+// so the schemas of an extra server's allowed tools are read before the launch.
+// It runs from the review root, as the broker will, so relative args resolve the same way.
+async function upstreamTools(spec: McpSpec, root: string): Promise<{ tools: Tool[]; error?: string }> {
+  const client = new Client({ name: 'syndic-review-extra', version: '1' });
+  let expiry: ReturnType<typeof setTimeout> | undefined;
+  try {
+    const listing = (async () => {
+      const transport = new StdioClientTransport({ command: spec.command, args: spec.args ?? [], cwd: root,
+        env: Object.fromEntries(Object.entries(reviewEnvironment(process.env))
+          .filter((pair): pair is [string, string] => typeof pair[1] === 'string')), stderr: 'pipe' });
+      // An unread stderr pipe fills and blocks a chatty server before it answers the handshake.
+      transport.stderr?.on('data', () => { });
+      await client.connect(transport);
+      return (await client.listTools()).tools;
+    })();
+    listing.catch(() => { });
+    const all = await Promise.race([listing, new Promise<never>((_, reject) => {
+      expiry = setTimeout(() => reject(new Error('did not list its tools in time')), TOOL_LIST_MS);
+    })]);
+    const named = all.filter(tool => spec.tools.includes(tool.name));
+    // Review mode changes nothing, so a tool its server declares as changing state is not offered.
+    const mutating = named.filter(tool => tool.annotations?.readOnlyHint === false || tool.annotations?.destructiveHint === true);
+    const tools = named.filter(tool => !mutating.includes(tool));
+    const absent = spec.tools.filter(name => !named.some(tool => tool.name === name));
+    const problems = [absent.length ? `server has no tool ${absent.join(', ')}` : '',
+      mutating.length ? `${mutating.map(tool => tool.name).join(', ')} declared as changing state, not offered in review mode` : ''].filter(Boolean);
+    return { tools, error: problems.length ? `${spec.name}: ${problems.join('; ')}` : undefined };
+  } catch (error) {
+    return { tools: [], error: `${spec.name}: ${error instanceof Error ? error.message : String(error)}` };
+  } finally {
+    clearTimeout(expiry);
+    await client.close().catch(() => { });
+  }
+}
+
 export interface ReviewLaunch {
   cwd: string;
   args: string[];
@@ -120,7 +163,18 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
   if (engine !== 'claude' && engine !== 'codex') throw new Error('Review mode supports Claude and Codex only');
   const roslyn = await resolveReviewRoslyn(options.roslyn);
   const semantic = roslyn.roslyn ? await semanticTools(roslyn.roslyn) : [];
+  const defaults = options.defaults === false ? { skills: [], mcp: [], notes: [] } : await loadReviewDefaults();
+  const notes = [...defaults.notes];
+  const skills = await resolveSkills([...defaults.skills, ...(options.skills ?? [])]);
+  if (skills.missing.length) notes.push(`Requested skills not found: ${skills.missing.join(', ')}. Mark the coverage they would add as incomplete.`);
+  const extraMcp = await Promise.all(mergeMcp(defaults.mcp, options.mcp ?? []).map(async spec => {
+    const listed = await upstreamTools(spec, root);
+    if (listed.error) notes.push(`Extra MCP ${listed.error}`);
+    return { ...spec, tools: listed.tools };
+  }));
+  // Only the caller's evidence must be read for a report to count; skills are readable but not evidence.
   const inputs = await Promise.all(options.inputs.map(path => realpath(path)));
+  const skillInputs = await Promise.all(skills.found.map(skill => realpath(skill.path)));
   const cwd = await mkdtemp(join(tmpdir(), 'syndic-review-'));
   const cleanup = async () => {
     await rm(cwd, { recursive: true, force: true });
@@ -136,6 +190,10 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
       'Attribute reads to working_tree or supplied_input as returned. A snapshot filename or matching contents does not prove a commit. git_diff compares only the requested commits.',
       'Check supplied_inputs and read relevant supplied files before claiming evidence is unavailable. Roslyn tool availability is separate from supplied Roslyn source snapshots.',
       'In the report, identify evidence used and relevant evidence left unread, including failed reads and unread line ranges. Unread evidence is not unavailable evidence.',
+      ...(skills.found.length ? ['Skill instructions are supplied inputs. Read each one before reviewing and apply it: ' +
+        skills.found.map(skill => `${skill.name} (${skill.path.replaceAll('\\', '/')})`).join(', ') + '.'] : []),
+      'review_status lists notes about requested skills and extra tools. Report any that affect coverage.',
+      'search_files finds text in tracked files of every type (.sql, json, docs, scripts), which the Roslyn text search does not cover. Search the names a change touches before concluding nothing else uses them.',
       'Return the complete Markdown report as your final response. Syndic saves it. Do not write files.',
     ].join('\n');
     const taskPrompt = prompt + '\n\n' + evidenceProtocol + '\n';
@@ -143,8 +201,9 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
     const resolvedPrompt = await realpath(promptPath);
     const promptLines = taskPrompt.split(/\r?\n/).length;
     const writeAccess = () => writeFile(join(cwd, 'access.json'), JSON.stringify({ root,
-      inputs: [...inputs, promptPath], audit_path: auditFile, attempt,
-      roslyn: roslyn.roslyn, roslyn_error: roslyn.error, semantic_tools: semantic }), 'utf8');
+      inputs: [...inputs, ...skillInputs, promptPath], audit_path: auditFile, attempt,
+      roslyn: roslyn.roslyn, roslyn_error: roslyn.error, semantic_tools: semantic,
+      extra_mcp: extraMcp, notes }), 'utf8');
     await writeAccess();
     const server = { command: process.execPath, args: [fileURLToPath(new URL('./review-server.js', import.meta.url)), join(cwd, 'access.json')] };
     const env: NodeJS.ProcessEnv = { ...reviewEnvironment(process.env), MSYS2_ARG_CONV_EXCL: '*',

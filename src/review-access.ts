@@ -51,6 +51,23 @@ export class ReviewAccess {
       total_lines: lines.length, offset, lines: lines.slice(offset - 1, offset - 1 + limit) };
   }
 
+  // git grep covers tracked files of every type, read from the working tree like read_file.
+  async search(pattern: string, prefix = '', limit = 100, regex = false): Promise<{ matches: string[]; total: number; truncated: boolean }> {
+    if (!pattern || pattern.length > 200) throw new Error('pattern must be 1..200 characters');
+    if (!Number.isInteger(limit) || limit < 1 || limit > 500) throw new Error('limit must be 1..500');
+    if (prefix.startsWith(':') || prefix.split(/[\\/]/).includes('..')) throw new Error('prefix must be a plain repository path');
+    let out = '';
+    try {
+      out = await this.git(['-c', 'core.quotepath=false', 'grep', '-n', '-I', '-i', regex ? '-E' : '-F', '--no-color', '-e', pattern, '--', ...(prefix ? [prefix] : [])]);
+    } catch (error) {
+      const code = (error as { code?: number | string }).code;
+      if (code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') throw new Error('Too many matches; narrow the pattern or the prefix');
+      if (code !== 1) throw error; // exit 1 is "no match"
+    }
+    const lines = out.split(/\r?\n/).filter(Boolean);
+    return { matches: lines.slice(0, limit).map(line => line.slice(0, 300)), total: lines.length, truncated: lines.length > limit };
+  }
+
   async diff(base: string, head: string): Promise<string> {
     if (![base, head].every(value => /^[a-fA-F0-9]{40,64}$/.test(value))) throw new Error('Full commit SHAs required');
     return this.git(['diff', '--no-ext-diff', '--no-textconv', base, head, '--']);

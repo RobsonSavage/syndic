@@ -12,7 +12,7 @@
   ],
   "scripts": {
     "build": "tsc && node scripts/copy-native.mjs",
-    "test": "npm run build && node --test tests/*.test.mjs",
+    "test": "npm run build && node --import ./tests/isolate-defaults.mjs --test tests/*.test.mjs",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "prepublishOnly": "npm run build"
