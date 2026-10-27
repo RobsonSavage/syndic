@@ -70,6 +70,14 @@ test('engine launch overrides and defaults', async () => {
       // "default" is how the tool documents omission. Forwarded as an
       // identifier it reaches the provider, which rejects it with a 400.
       for (const engine of ['codex', 'opencode', 'claude', 'gemini']) {
+        for (const [model, effort] of [['', ''], ['  ', ' ']]) {
+          const blank = await manager.run(engine, 'Inspect the task', cwd, undefined, false, false, model, effort);
+          const blankArgs = launches.at(-1).args;
+          assert.equal(blankArgs.includes('--model'), false, `model ${JSON.stringify(model)}`);
+          assert.equal(blankArgs.includes('--effort'), false);
+          assert.equal(blankArgs.some(arg => arg.startsWith('model_reasoning_effort=')), false);
+          assert.deepEqual(blank.launch, { model: null, reasoning_effort: null, mode: 'default' });
+        }
         const task = await manager.run(engine, 'Inspect the task', cwd, undefined, false, false, 'Default', 'DEFAULT');
         const { args } = launches.at(-1);
         assert.equal(args.includes('--model'), false);
@@ -101,7 +109,7 @@ test('engine launch overrides and defaults', async () => {
     {
       const before = await readdir(join(cwd, '.syndic'));
       const count = launches.length;
-      for (const invalid of ['', '-flag', 'a&whoami', '%PATH%', 'a b', 'a"b', 'a\nb']) {
+      for (const invalid of ['-flag', 'a&whoami', '%PATH%', 'a b', 'a"b', 'a\nb']) {
         await assert.rejects(manager.run('codex', 'Inspect the task', cwd, undefined, false, false, invalid), /Invalid model/);
         await assert.rejects(manager.run('opencode', 'Inspect the task', cwd, undefined, false, false, undefined, invalid), /Invalid reasoning_effort/);
       }

@@ -170,8 +170,9 @@ export class EngineManager {
     }
     // These values cross cmd.exe: accept identifiers, never shell syntax.
     for (const [name, value] of [['model', model], ['reasoning_effort', reasoningEffort]]) {
-      if (value !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(value)) {
-        throw new Error(`Invalid ${name}: expected a non-empty model or effort identifier.`);
+      // A blank value is an omission (omitDefault below), not an identifier to check.
+      if (value?.trim() && !/^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(value.trim())) {
+        throw new Error(`Invalid ${name}: expected a model or effort identifier.`);
       }
     }
     // The tag becomes a file name beside the task's own files.
@@ -182,7 +183,7 @@ export class EngineManager {
     // Forwarded as an identifier it reaches the provider, which rejects it
     // with a 400. Treat it as the omission it was meant to be; `requested`
     // still records what the caller asked for.
-    const omitDefault = (value?: string) => value?.toLowerCase() === 'default' ? undefined : value;
+    const omitDefault = (value?: string) => !value?.trim() || value.trim().toLowerCase() === 'default' ? undefined : value.trim();
     // OpenCode review mode loads no user config, so an omitted model comes from the config's top-level "model".
     const launchModel = omitDefault(model) ?? (review && engine === 'opencode' ? await openCodeConfigModel() : undefined);
     const launchEffort = omitDefault(reasoningEffort);
