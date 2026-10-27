@@ -204,9 +204,9 @@ tools denied. OpenCode 2 reaches MCP tools through its `execute` tool and cannot
 prompt forbids the state-changing ones, and a review whose events show a call to one (read-only helpers such as `models` and `worktree_list` pass), or to any tool other than
 `execute`, is rejected after the fact. A helper call that already ran is not undone.
 
-When `model` is omitted, OpenCode review mode uses the top-level `model` in
-`~/.config/opencode/config.json`, else the first `favorite` entry of
-`~/.local/state/opencode/model.json` (the picker's state), else its first `recent` entry. API keys in the
+When `model` is omitted, OpenCode review mode uses the first `favorite` entry of
+`~/.local/state/opencode/model.json` (the picker's state), else the top-level `model` in
+`~/.config/opencode/config.json`, else the first `recent` entry of `model.json`. API keys in the
 environment play no part in the choice. Only the model name is read, plus the provider block for that model
 when `config.json` defines it with no option except `baseURL` (a local server such as `ollama`). A block with
 an `apiKey` or other options is never copied. The block is also passed for a `model` you name yourself.
