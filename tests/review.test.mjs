@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { ReviewAccess } from '../dist/review-access.js';
-import { openCodeConfigModel, prepareReview, resolveReviewRoslyn, reviewEnvironment } from '../dist/review.js';
+import { openCodeConfigModel, openCodeProviderBlock, prepareReview, resolveReviewRoslyn, reviewEnvironment } from '../dist/review.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -197,10 +197,13 @@ test('OpenCode review needs provider/model and runs with an empty home and stand
   } finally { await launch.cleanup(); }
 });
 
+const KEYS = { OLLAMA_API_KEY: 'k', DEEPSEEK_API_KEY: 'k' };
+
 test('openCodeConfigModel reads only a safe provider/model from the top level of config.json', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'syndic-ocmodel-'));
+  const state = await mkdtemp(join(tmpdir(), 'syndic-ocstate-'));
   try {
-    assert.equal(await openCodeConfigModel(dir), undefined);
+    assert.equal(await openCodeConfigModel(dir, state, KEYS), undefined);
     for (const [content, expected] of [
       [JSON.stringify({ model: 'ollama/glm-5.3:cloud', agent: { a: { model: 'x/y' } } }), 'ollama/glm-5.3:cloud'],
       [JSON.stringify({ agent: { a: { model: 'x/y' } } }), undefined],
@@ -209,9 +212,31 @@ test('openCodeConfigModel reads only a safe provider/model from the top level of
       ['{ not json', undefined],
     ]) {
       await writeFile(join(dir, 'config.json'), content, 'utf8');
-      assert.equal(await openCodeConfigModel(dir), expected, content);
+      assert.equal(await openCodeConfigModel(dir, state, KEYS), expected, content);
     }
-  } finally { await rm(dir, { recursive: true, force: true }); }
+  } finally { await rm(dir, { recursive: true, force: true }); await rm(state, { recursive: true, force: true }); }
+});
+
+test('openCodeConfigModel falls back to model.json favorite, then recent, after config.json', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'syndic-ocmodel-'));
+  const state = await mkdtemp(join(tmpdir(), 'syndic-ocstate-'));
+  const pick = (providerID, modelID) => ({ providerID, modelID });
+  const write = content => writeFile(join(state, 'model.json'), typeof content === 'string' ? content : JSON.stringify(content), 'utf8');
+  try {
+    await write({ favorite: [pick('ollama', 'a:cloud')], recent: [pick('deepseek', 'deepseek-flash')] });
+    assert.equal(await openCodeConfigModel(dir, state, KEYS), 'ollama/a:cloud', 'favorite beats recent');
+    await write({ favorite: [], recent: [pick('deepseek', 'deepseek-flash')] });
+    assert.equal(await openCodeConfigModel(dir, state, KEYS), 'deepseek/deepseek-flash', 'recent when no favorite');
+    await write({ favorite: [pick('bad', 'x & calc')], recent: [pick('deepseek', 'deepseek-flash')] });
+    assert.equal(await openCodeConfigModel(dir, state, KEYS), 'deepseek/deepseek-flash', 'unsafe favorite is skipped');
+    await write({ favorite: [{ providerID: 1 }], recent: 'nope' });
+    assert.equal(await openCodeConfigModel(dir, state, KEYS), undefined, 'malformed entries');
+    await write('{ not json');
+    assert.equal(await openCodeConfigModel(dir, state, KEYS), undefined, 'unparseable model.json');
+    await write({ favorite: [pick('ollama', 'a:cloud')] });
+    await writeFile(join(dir, 'config.json'), JSON.stringify({ model: 'deepseek/deepseek-flash' }), 'utf8');
+    assert.equal(await openCodeConfigModel(dir, state, KEYS), 'deepseek/deepseek-flash', 'config.json wins');
+  } finally { await rm(dir, { recursive: true, force: true }); await rm(state, { recursive: true, force: true }); }
 });
 
 test('OpenCode review rejects tools.opencode calls and other tools, and reads the last step as the report', async () => {
@@ -232,4 +257,24 @@ test('OpenCode review rejects tools.opencode calls and other tools, and reads th
     launch.observe({}, events([{ type: 'tool_use', part: { tool: 'websearch', state: {} } }]), '');
     await assert.rejects(launch.result(), /called tool websearch/);
   } finally { await launch.cleanup(); }
+});
+
+test('openCodeConfigModel takes the first listed model whose provider this PC can reach', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'syndic-ocmodel-'));
+  const state = await mkdtemp(join(tmpdir(), 'syndic-ocstate-'));
+  const pick = (providerID, modelID) => ({ providerID, modelID });
+  const model = (favorite, recent, env) => writeFile(join(state, 'model.json'), JSON.stringify({ favorite, recent }), 'utf8')
+    .then(() => openCodeConfigModel(dir, state, env));
+  try {
+    assert.equal(await model([pick('openai', 'gpt-x')], [pick('deepseek', 'deepseek-flash')], { OPENAI_API_KEY: 'k', DEEPSEEK_API_KEY: 'k' }), 'openai/gpt-x', 'both keys set: list order decides');
+    assert.equal(await model([pick('openai', 'gpt-x')], [pick('deepseek', 'deepseek-flash')], { DEEPSEEK_API_KEY: 'k' }), 'deepseek/deepseek-flash', 'favorite without a key is skipped');
+    assert.equal(await model([pick('openai', 'gpt-x')], [pick('deepseek', 'deepseek-flash')], { OPENCODE_API_KEY: 'k' }), undefined, 'the opencode key opens only the opencode provider');
+    await writeFile(join(dir, 'config.json'), JSON.stringify({ provider: {
+      ollama: { npm: '@ai-sdk/openai-compatible', options: { baseURL: 'http://localhost:11434/v1' }, models: {} },
+      moonshot: { options: { apiKey: 'secret', baseURL: 'https://x/v1' } } } }), 'utf8');
+    assert.equal(await model([pick('moonshot', 'k3')], [pick('ollama', 'a:cloud')], { MOONSHOT_API_KEY: 'k' }), 'ollama/a:cloud', 'a block with an apiKey is unreachable, a keyless block is reachable');
+    assert.deepEqual(await openCodeProviderBlock('ollama/a:cloud', dir), { npm: '@ai-sdk/openai-compatible', options: { baseURL: 'http://localhost:11434/v1' }, models: {} });
+    assert.equal(await openCodeProviderBlock('moonshot/k3', dir), undefined);
+    assert.equal(await openCodeProviderBlock('deepseek/deepseek-flash', dir), undefined);
+  } finally { await rm(dir, { recursive: true, force: true }); await rm(state, { recursive: true, force: true }); }
 });

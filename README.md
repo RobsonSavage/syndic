@@ -204,10 +204,14 @@ tools denied. OpenCode 2 reaches MCP tools through its `execute` tool and cannot
 prompt forbids the state-changing ones, and a review whose events show a call to one (read-only helpers such as `models` and `worktree_list` pass), or to any tool other than
 `execute`, is rejected after the fact. A helper call that already ran is not undone.
 
-When `model` is omitted, OpenCode review mode uses the top-level `model` in
-`~/.config/opencode/config.json`. Only that name is read. The config itself stays unloaded, so a
-provider defined there (for example `ollama/...`) has no route in the empty home and OpenCode
-answers `provider.no-route`. Use a model whose provider is built in and whose API key is in the environment.
+When `model` is omitted, OpenCode review mode takes the first usable model from the top-level `model` in
+`~/.config/opencode/config.json`, then the `favorite` entries, then the `recent` entries of
+`~/.local/state/opencode/model.json` (the picker's state). A model is usable when its provider is
+defined in `config.json` as a block with no option except `baseURL` (a local server such as `ollama`),
+or, with no block, when the provider's `<PROVIDER>_API_KEY` is in the environment. Only the model name
+and that provider block are read: the rest of the config stays unloaded. A provider block with an
+`apiKey` or other options is never copied. The block is also passed for a `model` you name yourself.
+Syndic does not check that a local server is running.
 
 Claude review launches preserve the CLI's built-in tool guidance and append the
 review instructions; personal and project instruction files remain disabled.
