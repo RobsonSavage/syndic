@@ -185,30 +185,23 @@ export async function openCodeProviderBlock(model: string, configDir: string = j
 }
 
 /**
- * The model OpenCode itself would start with: the top-level "model" of config.json, then the picker's state file
- * (model.json) favorites, then its recent models, taking the first whose provider this PC can reach. Review mode runs
- * with an empty home and loads neither file, so only the model name is read to stand in for an omitted `model`.
- * A provider is reachable when config.json defines it as a forwardable block, or, with no block, when its API key is in env.
+ * The model OpenCode itself would start with: the top-level "model" of config.json, then the first favorite of the
+ * picker's state file (model.json), then its most recent model. Review mode runs with an empty home and loads neither
+ * file, so only the model name is read to stand in for an omitted `model`. Environment API keys play no part in the
+ * choice: an unreachable provider fails in OpenCode with its own error.
  * Same identifier rule as a caller-supplied model, because the value reaches cmd.exe.
  * shortcut: reads config.json and model.json only (no JSONC, no other file names), extend when a config uses another name.
  */
 export async function openCodeConfigModel(
   configDir: string = join(homedir(), '.config', 'opencode'),
   stateDir: string = join(homedir(), '.local', 'state', 'opencode'),
-  env: NodeJS.ProcessEnv = process.env,
 ): Promise<string | undefined> {
   const config = await readJson(join(configDir, 'config.json'));
   const state = await readJson(join(stateDir, 'model.json'));
-  const entries = (list: unknown): unknown[] =>
-    Array.isArray(list) ? list.map((e: any) => typeof e?.providerID === 'string' && typeof e?.modelID === 'string' ? `${e.providerID}/${e.modelID}` : undefined) : [];
-  const reachable = (model: string): boolean => {
-    const id = model.split('/')[0];
-    const block = config?.provider?.[id];
-    if (block !== undefined) return forwardableProvider(block) !== undefined;
-    return openCodeProviderKeys(model).some(key => (key !== 'OPENCODE_API_KEY' || id === 'opencode') && !!env[key]);
-  };
-  return [config?.model, ...entries(state?.favorite), ...entries(state?.recent)].find((model): model is string =>
-    typeof model === 'string' && model.includes('/') && /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(model) && reachable(model));
+  const entry = (e: any): string | undefined =>
+    typeof e?.providerID === 'string' && typeof e?.modelID === 'string' ? `${e.providerID}/${e.modelID}` : undefined;
+  return [config?.model, entry(state?.favorite?.[0]), entry(state?.recent?.[0])].find((model): model is string =>
+    typeof model === 'string' && model.includes('/') && /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(model));
 }
 
 /** OpenCode review mode cannot hide tools.opencode.* from the model, so a call to it is found after the fact. */
