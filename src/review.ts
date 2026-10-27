@@ -164,19 +164,51 @@ export function openCodeProviderKeys(model: string): string[] {
   return [`${provider}_API_KEY`, ...(provider === 'GOOGLE' ? ['GEMINI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY'] : []), 'OPENCODE_API_KEY'];
 }
 
+const readJson = async (path: string): Promise<any> => {
+  try { return JSON.parse(await readFile(path, 'utf8')); } catch { return undefined; }
+};
+
 /**
- * The top-level "model" of OpenCode's own config. Review mode runs with an empty home and never loads that config,
- * so only the model name is read to stand in for an omitted `model`. Same identifier rule as a caller-supplied model,
- * because the value reaches cmd.exe.
- * shortcut: reads config.json only (no JSONC, no other file names), extend when a config uses another name.
+ * A custom provider block that is safe to hand to the review run: an object whose only option is baseURL (a local
+ * server such as ollama). Anything else, apiKey and headers included, would put a secret in the config or drop a setting.
  */
-export async function openCodeConfigModel(configDir: string = join(homedir(), '.config', 'opencode')): Promise<string | undefined> {
-  try {
-    const model = JSON.parse(await readFile(join(configDir, 'config.json'), 'utf8'))?.model;
-    return typeof model === 'string' && model.includes('/') && /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(model) ? model : undefined;
-  } catch {
-    return undefined;
-  }
+function forwardableProvider(block: any): object | undefined {
+  return block && typeof block === 'object' && Object.keys(block.options ?? {}).every(key => key === 'baseURL') ? block : undefined;
+}
+
+/**
+ * The provider block for the model's provider from OpenCode's config.json. Review mode runs with an empty home and loads
+ * no config, so a custom provider (ollama) has no route unless its block is passed in.
+ */
+export async function openCodeProviderBlock(model: string, configDir: string = join(homedir(), '.config', 'opencode')): Promise<object | undefined> {
+  return forwardableProvider((await readJson(join(configDir, 'config.json')))?.provider?.[model.split('/')[0]]);
+}
+
+/**
+ * The model OpenCode itself would start with: the top-level "model" of config.json, then the picker's state file
+ * (model.json) favorites, then its recent models, taking the first whose provider this PC can reach. Review mode runs
+ * with an empty home and loads neither file, so only the model name is read to stand in for an omitted `model`.
+ * A provider is reachable when config.json defines it as a forwardable block, or, with no block, when its API key is in env.
+ * Same identifier rule as a caller-supplied model, because the value reaches cmd.exe.
+ * shortcut: reads config.json and model.json only (no JSONC, no other file names), extend when a config uses another name.
+ */
+export async function openCodeConfigModel(
+  configDir: string = join(homedir(), '.config', 'opencode'),
+  stateDir: string = join(homedir(), '.local', 'state', 'opencode'),
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<string | undefined> {
+  const config = await readJson(join(configDir, 'config.json'));
+  const state = await readJson(join(stateDir, 'model.json'));
+  const entries = (list: unknown): unknown[] =>
+    Array.isArray(list) ? list.map((e: any) => typeof e?.providerID === 'string' && typeof e?.modelID === 'string' ? `${e.providerID}/${e.modelID}` : undefined) : [];
+  const reachable = (model: string): boolean => {
+    const id = model.split('/')[0];
+    const block = config?.provider?.[id];
+    if (block !== undefined) return forwardableProvider(block) !== undefined;
+    return openCodeProviderKeys(model).some(key => (key !== 'OPENCODE_API_KEY' || id === 'opencode') && !!env[key]);
+  };
+  return [config?.model, ...entries(state?.favorite), ...entries(state?.recent)].find((model): model is string =>
+    typeof model === 'string' && model.includes('/') && /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(model) && reachable(model));
 }
 
 /** OpenCode review mode cannot hide tools.opencode.* from the model, so a call to it is found after the fact. */
@@ -200,7 +232,7 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
   options: ReviewOptions, auditPath?: string, model?: string): Promise<ReviewLaunch> {
   if (engine !== 'claude' && engine !== 'codex' && engine !== 'opencode') throw new Error('Review mode supports Claude, Codex and OpenCode only');
   // The engine fills an omitted model from OpenCode's config (openCodeConfigModel); what reaches here is all there is.
-  if (engine === 'opencode' && !model?.includes('/')) throw new Error('OpenCode review mode needs model as provider/model, and the OpenCode config names no top-level "model".');
+  if (engine === 'opencode' && !model?.includes('/')) throw new Error('OpenCode review mode needs model as provider/model, and neither the OpenCode config nor its model.json names one.');
   const roslyn = await resolveReviewRoslyn(options.roslyn);
   const semantic = roslyn.roslyn ? await semanticTools(roslyn.roslyn) : [];
   const defaults = options.defaults === false ? { skills: [], mcp: [], notes: [] } : await loadReviewDefaults();
@@ -273,6 +305,7 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
       const realHome = process.env.USERPROFILE ?? process.env.HOME ?? '';
       const home = join(cwd, 'home');
       await mkdir(home, { recursive: true });
+      const providerBlock = await openCodeProviderBlock(model!);
       env.USERPROFILE = home;
       env.HOME = home;
       env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
@@ -286,6 +319,7 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
           lsp: 'deny', webfetch: 'deny', websearch: 'deny', question: 'deny', skill: 'deny', external_directory: 'deny', task: 'deny' },
         mcp: { syndic_review: { type: 'local', enabled: true, command: [server.command, ...server.args],
           environment: { USERPROFILE: realHome, HOME: realHome } } },
+        ...(providerBlock && { provider: { [model!.split('/')[0]]: providerBlock } }),
       });
       env.OPENCODE_DISABLE_CLAUDE_CODE = '1';
       env.OPENCODE_DISABLE_AUTOUPDATE = '1';
