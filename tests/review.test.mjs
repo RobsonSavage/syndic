@@ -233,7 +233,9 @@ test('openCodeConfigModel falls back to the model.json favorite, then the most r
     assert.equal(await openCodeConfigModel(dir, state), undefined, 'unparseable model.json');
     await write({ favorite: [pick('ollama', 'a:cloud')] });
     await writeFile(join(dir, 'config.json'), JSON.stringify({ model: 'deepseek/deepseek-flash' }), 'utf8');
-    assert.equal(await openCodeConfigModel(dir, state), 'deepseek/deepseek-flash', 'config.json wins');
+    assert.equal(await openCodeConfigModel(dir, state), 'ollama/a:cloud', 'the favorite beats config.json');
+    await write({ recent: [pick('openai', 'gpt-x')] });
+    assert.equal(await openCodeConfigModel(dir, state), 'deepseek/deepseek-flash', 'config.json beats recent');
   } finally { await rm(dir, { recursive: true, force: true }); await rm(state, { recursive: true, force: true }); }
 });
 

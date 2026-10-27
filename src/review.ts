@@ -185,8 +185,8 @@ export async function openCodeProviderBlock(model: string, configDir: string = j
 }
 
 /**
- * The model OpenCode itself would start with: the top-level "model" of config.json, then the first favorite of the
- * picker's state file (model.json), then its most recent model. Review mode runs with an empty home and loads neither
+ * The model OpenCode itself would start with: the first favorite of the picker's state file (model.json), then the
+ * top-level "model" of config.json, then the most recent model in model.json. Review mode runs with an empty home and loads neither
  * file, so only the model name is read to stand in for an omitted `model`. Environment API keys play no part in the
  * choice: an unreachable provider fails in OpenCode with its own error.
  * Same identifier rule as a caller-supplied model, because the value reaches cmd.exe.
@@ -200,7 +200,7 @@ export async function openCodeConfigModel(
   const state = await readJson(join(stateDir, 'model.json'));
   const entry = (e: any): string | undefined =>
     typeof e?.providerID === 'string' && typeof e?.modelID === 'string' ? `${e.providerID}/${e.modelID}` : undefined;
-  return [config?.model, entry(state?.favorite?.[0]), entry(state?.recent?.[0])].find((model): model is string =>
+  return [entry(state?.favorite?.[0]), config?.model, entry(state?.recent?.[0])].find((model): model is string =>
     typeof model === 'string' && model.includes('/') && /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(model));
 }
 
