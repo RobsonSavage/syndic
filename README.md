@@ -82,7 +82,7 @@ Spawn an external AI CLI engine to execute a task.
 | `model` | `string` | No | Model override for Codex, Gemini, Claude Code, or OpenCode (`provider/model`). Omit to use the CLI default. For Gemini, only set when the user explicitly requests a model. |
 | `reasoning_effort` | `string` | No | Codex or Claude Code reasoning effort, or OpenCode model variant, supported by the selected model/provider. Omit to use the CLI default. Rejected for Gemini. |
 | `skip_git_repo_check` | `boolean` | No | Codex only. Set `true` when `cwd` is knowingly not a git repository; otherwise `codex exec` refuses to start with `Not inside a trusted directory`. What the engine writes there is outside revision control. Default: `false`. Rejected for the other engines. |
-| `mode` | `"default" \| "review"` | No | `review` restricts Claude/Codex to source/semantic inspection and captures their final report. Requires `yolo: false`. |
+| `mode` | `"default" \| "review"` | No | `review` restricts Claude/Codex (and, with the limit below, OpenCode) to source/semantic inspection and captures their final report. Requires `yolo: false`. |
 | `review_inputs` | `string[]` | No | Absolute paths to packet/procedure/evidence files the reviewer may read, in addition to tracked repository source. |
 | `review_roslyn` | `{command: string, args?: string[]}` | No | Override the automatic per-user Roslyn installation with a trusted absolute executable and arguments. Review mode only. |
 | `review_skills` | `string[]` | No | Skills the reviewer must read and apply, as `plugin:skill` or `skill`. Added to `review.skills` from the [defaults file](#defaults-skills-and-extra-mcp-servers). Review mode only. |
@@ -195,6 +195,14 @@ Unavailable Roslyn semantic tools do not make supplied Roslyn scripts unavailabl
 The reviewer returns Markdown in its final response; syndic writes the output and
 sentinel after the CLI exits. The coordinator validates coverage and saves/publishes
 the report. A transport success is not evidence of a complete review.
+
+OpenCode review mode (OpenCode 2, `model` as `provider/model`, `reasoning_effort` as the
+variant) is not a hard read-only boundary. It runs `opencode run --standalone` with an empty
+home folder, only the review MCP server, and shell, edit, read, glob, grep, web and question
+tools denied. OpenCode 2 reaches MCP tools through its `execute` tool and cannot hide its own
+`tools.opencode.*` helpers (session rename, worktree create) from the model. The
+prompt forbids the state-changing ones, and a review whose events show a call to one (read-only helpers such as `models` and `worktree_list` pass), or to any tool other than
+`execute`, is rejected after the fact. A helper call that already ran is not undone.
 
 Claude review launches preserve the CLI's built-in tool guidance and append the
 review instructions; personal and project instruction files remain disabled.

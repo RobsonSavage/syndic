@@ -1,7 +1,7 @@
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
-import { mkdtemp, writeFile, readFile, rename, rm, realpath, stat } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, rename, rm, realpath, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -150,17 +150,42 @@ export interface ReviewLaunch {
   cleanup(): Promise<void>;
 }
 
-export function reviewEnvironment(source: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+export function reviewEnvironment(source: NodeJS.ProcessEnv, extraKeys: string[] = []): NodeJS.ProcessEnv {
   const allowed = new Set(['PATH', 'PATHEXT', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP',
     'USERPROFILE', 'HOME', 'APPDATA', 'LOCALAPPDATA', 'PROGRAMDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)',
     'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS', 'CODEX_HOME',
-    'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN']);
+    'OPENAI_API_KEY', 'ANTHROPIC_API_KEY', 'CLAUDE_CODE_OAUTH_TOKEN', ...extraKeys.map(key => key.toUpperCase())]);
   return Object.fromEntries(Object.entries(source).filter(([key]) => allowed.has(key.toUpperCase())));
 }
 
+/** Env var names an OpenCode provider reads its API key from. OpenCode names them after the provider id, except Google. */
+export function openCodeProviderKeys(model: string): string[] {
+  const provider = model.split('/')[0].toUpperCase().replace(/[^A-Z0-9]/g, '_');
+  return [`${provider}_API_KEY`, ...(provider === 'GOOGLE' ? ['GEMINI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY'] : []), 'OPENCODE_API_KEY'];
+}
+
+/** OpenCode review mode cannot hide tools.opencode.* from the model, so a call to it is found after the fact. */
+export function openCodePolicyViolation(part: { tool?: unknown; state?: { input?: { code?: unknown } } } | undefined): string | undefined {
+  const tool = typeof part?.tool === 'string' ? part.tool : '';
+  if (tool && tool !== 'execute' && !tool.startsWith('syndic_review')) return `called tool ${tool}.`;
+  const code = part?.state?.input?.code;
+  if (typeof code !== 'string') return undefined;
+  if (/\btools\s*\[\s*["'`]opencode["'`]\s*\]/.test(code)) return 'called tools.opencode by computed name.';
+  for (const [, name] of code.matchAll(/\btools\s*\.\s*opencode\s*\.\s*(\w+)/g)) {
+    if (!OPENCODE_READ_ONLY_HELPERS.has(name)) return `called tools.opencode.${name}.`;
+  }
+  if (/\btools\s*\.\s*opencode\s*(?![.\w])/.test(code)) return 'used tools.opencode directly.';
+  return undefined;
+}
+
+// Built-in OpenCode 2.1.2 helpers that only read. Every other tools.opencode.* helper is rejected.
+const OPENCODE_READ_ONLY_HELPERS = new Set(['models', 'list_mcp_resources', 'read_mcp_resource', 'worktree_list']);
+
 export async function prepareReview(engine: EngineType, root: string, prompt: string,
-  options: ReviewOptions, auditPath?: string): Promise<ReviewLaunch> {
-  if (engine !== 'claude' && engine !== 'codex') throw new Error('Review mode supports Claude and Codex only');
+  options: ReviewOptions, auditPath?: string, model?: string): Promise<ReviewLaunch> {
+  if (engine !== 'claude' && engine !== 'codex' && engine !== 'opencode') throw new Error('Review mode supports Claude, Codex and OpenCode only');
+  // OpenCode picks its default model from the user's config, which this mode does not load.
+  if (engine === 'opencode' && !model?.includes('/')) throw new Error('OpenCode review mode needs model as provider/model.');
   const roslyn = await resolveReviewRoslyn(options.roslyn);
   const semantic = roslyn.roslyn ? await semanticTools(roslyn.roslyn) : [];
   const defaults = options.defaults === false ? { skills: [], mcp: [], notes: [] } : await loadReviewDefaults();
@@ -195,6 +220,7 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
       'review_status lists notes about requested skills and extra tools. Report any that affect coverage.',
       'search_files finds text in tracked files of every type (.sql, json, docs, scripts), which the Roslyn text search does not cover. Search the names a change touches before concluding nothing else uses them.',
       'Return the complete Markdown report as your final response. Syndic saves it. Do not write files.',
+      ...(engine === 'opencode' ? ['Use only the syndic_review tools, called as tools.syndic_review.<name> inside execute. Never call tools.opencode.session_*, tools.opencode.worktree_create or any other tools.opencode.* helper that changes state: a review that calls one is rejected.'] : []),
     ].join('\n');
     const taskPrompt = prompt + '\n\n' + evidenceProtocol + '\n';
     await writeFile(promptPath, taskPrompt, 'utf8');
@@ -206,9 +232,10 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
       extra_mcp: extraMcp, notes }), 'utf8');
     await writeAccess();
     const server = { command: process.execPath, args: [fileURLToPath(new URL('./review-server.js', import.meta.url)), join(cwd, 'access.json')] };
-    const env: NodeJS.ProcessEnv = { ...reviewEnvironment(process.env), MSYS2_ARG_CONV_EXCL: '*',
+    const env: NodeJS.ProcessEnv = { ...reviewEnvironment(process.env, engine === 'opencode' ? openCodeProviderKeys(model!) : []), MSYS2_ARG_CONV_EXCL: '*',
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1', CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1' };
-    const boot = `Call syndic_review review_status for the supplied-input inventory and read semantics, then use read_file to read ${promptPath.replaceAll('\\', '/')} and perform that review. Return the report in your final response`;
+    const boot = `Call syndic_review review_status for the supplied-input inventory and read semantics, then use read_file to read ${promptPath.replaceAll('\\', '/')} and perform that review. Return the report in your final response` +
+      (engine === 'opencode' ? '. Call only tools.syndic_review.* inside execute. Never call tools.opencode.session_*, tools.opencode.worktree_create or any other tools.opencode.* helper that changes state; a review that does is rejected' : '');
     let args: string[];
     if (engine === 'claude') {
       // Solution loading runs behind the handshake, so this covers only a slow
@@ -224,6 +251,31 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
         // is disabled separately in the environment above.
         '--append-system-prompt', 'Review only the supplied evidence using the syndic_review tools. Invoke tools through native tool calls and wait for their results; do not print tool invocations as text. Return a Markdown report. Memory and external actions are outside this task.',
         '-p', boot];
+    } else if (engine === 'opencode') {
+      // OpenCode 2 reads its config, agents, plugins, MCP servers and stored logins from the home folder,
+      // so an empty home is the only isolation that drops them all. Provider keys then come from the
+      // allow-listed environment above. The review server keeps the real home: Roslyn needs it.
+      const realHome = process.env.USERPROFILE ?? process.env.HOME ?? '';
+      const home = join(cwd, 'home');
+      await mkdir(home, { recursive: true });
+      env.USERPROFILE = home;
+      env.HOME = home;
+      env.OPENCODE_CONFIG_CONTENT = JSON.stringify({
+        autoupdate: false, share: 'disabled',
+        // Verified live on OpenCode 2.1.2: this layout reaches syndic_review through the `execute` tool
+        // (tools.syndic_review.*) and blocks bash, edit and read. It does NOT block tools.opencode.*
+        // (session_rename ran, worktree_create ran and failed only because the folder is not a git repo),
+        // and denying them by name or with '*' hides the MCP tools too.
+        // shortcut: the helpers are blocked by the prompt and rejected after the fact (openCodePolicyViolation), not prevented.
+        permission: { 'syndic_review_*': 'allow', bash: 'deny', edit: 'deny', read: 'deny', glob: 'deny', grep: 'deny',
+          lsp: 'deny', webfetch: 'deny', websearch: 'deny', question: 'deny', skill: 'deny', external_directory: 'deny', task: 'deny' },
+        mcp: { syndic_review: { type: 'local', enabled: true, command: [server.command, ...server.args],
+          environment: { USERPROFILE: realHome, HOME: realHome } } },
+      });
+      env.OPENCODE_DISABLE_CLAUDE_CODE = '1';
+      env.OPENCODE_DISABLE_AUTOUPDATE = '1';
+      // --standalone: the default background service keeps its own config and would ignore the above.
+      args = ['run', '--standalone', '--format', 'json', boot];
     } else {
       // --ignore-user-config also suppresses file profiles on the installed CLI.
       // Explicit overrides are applied after that suppression. No auth is copied.
@@ -238,10 +290,26 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
         '--skip-git-repo-check', '-s', 'read-only', ...overrides.flatMap(value => ['-c', value]), '-o', 'response.md', boot];
     }
     let response = '';
+    let policyViolation: string | undefined;
     return { cwd, args, env, cleanup,
       // The Codex launch banner is read by the engine manager, which records it
       // in every mode.
       observe(task, stdout) {
+        if (engine === 'opencode') {
+          // The report is the text of the last step: a step that ends in tool calls carries only narration.
+          let text = '';
+          policyViolation = undefined;
+          for (const line of stdout.split(/\r?\n/)) {
+            try {
+              const event = JSON.parse(line);
+              if (event.type === 'step_start') text = '';
+              if (event.type === 'text' && typeof event.part?.text === 'string') text += event.part.text;
+              if (event.type === 'tool_use') policyViolation ??= openCodePolicyViolation(event.part);
+            } catch { }
+          }
+          response = text;
+          return;
+        }
         if (engine !== 'claude') return;
         for (const line of stdout.split(/\r?\n/)) {
           try {
@@ -254,6 +322,7 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
         }
       },
       async result() {
+        if (policyViolation) throw new Error(`OpenCode review rejected: ${policyViolation}`);
         const output = engine === 'codex' ? await readFile(join(cwd, 'response.md'), 'utf8') : response;
         if (!output.trim()) throw new Error('CLI did not return a review report');
         // Some engines end successfully with serialized tool calls in their text

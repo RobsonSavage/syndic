@@ -180,3 +180,38 @@ test('review reads only tracked files and explicit inputs, with bounded ranges',
     await assert.rejects(access.diff('HEAD', 'HEAD'), /Full commit SHAs/);
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
+
+test('OpenCode review needs provider/model and runs with an empty home and standalone server', async () => {
+  await assert.rejects(prepareReview('opencode', process.cwd(), 'Review.', { inputs: [] }), /provider\/model/);
+  const launch = await prepareReview('opencode', process.cwd(), 'Review.', { inputs: [] }, undefined, 'deepseek/deepseek-flash');
+  try {
+    assert.deepEqual(launch.args.slice(0, 3), ['run', '--standalone', '--format']);
+    assert.notEqual(launch.env.USERPROFILE, process.env.USERPROFILE);
+    assert.equal(launch.env.HOME, launch.env.USERPROFILE);
+    const config = JSON.parse(launch.env.OPENCODE_CONFIG_CONTENT);
+    assert.equal(config.permission.bash, 'deny');
+    assert.deepEqual(Object.keys(config.mcp), ['syndic_review']);
+    const protocol = await readFile(join(launch.cwd, 'task.prompt'), 'utf8');
+    assert.match(protocol, /Never call tools\.opencode\.session_\*/);
+  } finally { await launch.cleanup(); }
+});
+
+test('OpenCode review rejects tools.opencode calls and other tools, and reads the last step as the report', async () => {
+  const launch = await prepareReview('opencode', process.cwd(), 'Review.', { inputs: [] }, undefined, 'deepseek/deepseek-flash');
+  try {
+    const events = lines => lines.map(line => JSON.stringify(line)).join('\n');
+    const execute = code => ({ type: 'tool_use', part: { tool: 'execute', state: { input: { code } } } });
+    launch.observe({}, events([{ type: 'step_start' }, { type: 'text', part: { text: 'narration' } },
+      execute('return await tools.syndic_review.review_status();'), { type: 'step_start' },
+      { type: 'text', part: { text: '## Findings\nNone.' } }]), '');
+    await assert.rejects(launch.result(), /broker receipts/);
+    for (const code of ['await tools.opencode.session_rename({title:"x"})', 'tools [ "opencode" ].worktree_list()']) {
+      launch.observe({}, events([execute(code), { type: 'text', part: { text: '## Findings\nNone.' } }]), '');
+      await assert.rejects(launch.result(), /OpenCode review rejected: called tools\.opencode/);
+    }
+    launch.observe({}, events([execute('return await tools.opencode.list_mcp_resources({});'), { type: 'text', part: { text: '## Findings\nNone.' } }]), '');
+    await assert.rejects(launch.result(), /broker receipts/);
+    launch.observe({}, events([{ type: 'tool_use', part: { tool: 'websearch', state: {} } }]), '');
+    await assert.rejects(launch.result(), /called tool websearch/);
+  } finally { await launch.cleanup(); }
+});
