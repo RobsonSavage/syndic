@@ -89,7 +89,7 @@ Spawn an external AI CLI engine to execute a task.
 | `review_mcp` | `{name: string, command: string, args?: string[], tools: string[], path_args?: Record<string, string[]>}[]` | No | Extra MCP servers the reviewer may call, each limited to `tools`. `command` must be an absolute path. `path_args` maps a tool to the argument names that carry file locations. Added to `review.mcp` from the defaults file; an entry with the same `name` replaces the default. Review mode only. |
 | `review_defaults` | `boolean` | No | `false` ignores the defaults file for this call. Review mode only. |
 
-For Codex with Astra at max effort, pass `engine="codex", model="gpt-6-astra", reasoning_effort="max"` to `syndic_run` along with the task prompt. These settings override the CLI defaults for that invocation. OpenCode receives the same fields through `--model` and `--variant`; use its provider/model identifier and a supported variant.
+For Codex with Astra at max effort, pass `engine="codex", model="gpt-6-astra", reasoning_effort="max"` to `syndic_run` along with the task prompt. These settings override the CLI defaults for that invocation. OpenCode (version 2 only) receives both in `--model` as `provider/model#variant`; use its provider/model identifier and a supported variant. An effort without a model is not sent.
 
 For Claude Code, pass `engine="claude"`, optionally with `model="opus"` and `reasoning_effort="max"`. Syndic launches `claude -p` and forwards the overrides through `--model` and `--effort`. Without overrides, Claude Code uses its configured defaults.
 

@@ -15,9 +15,7 @@ test('engine launch overrides and defaults', async () => {
     return { proc, receipt: async () => ({ pid: 123, termination: 'stopped', exit_code: 0 }),
       stop: () => { queueMicrotask(() => proc.emit('close', 0)); } };
   };
-  const { EngineManager, setOpenCodeRunHelp } = await import('../dist/engine.js');
-  // These assertions describe OpenCode 1's `run` flags, whatever CLI is installed.
-  setOpenCodeRunHelp('FLAGS\n  --dir string  Directory to run in\n  --variant string  Model variant\n');
+  const { EngineManager } = await import('../dist/engine.js');
   const manager = new EngineManager(launch);
   try {
     for (const yolo of [false, true]) {
@@ -31,7 +29,8 @@ test('engine launch overrides and defaults', async () => {
           assert.equal(args.some(arg => arg.startsWith('model_reasoning_effort=')), false);
           assert.equal(options.windowsHide, true);
           if (engine === 'opencode') {
-            assert.deepEqual(args.slice(2, 6), ['run', '--auto', '--dir', cwd]);
+            assert.deepEqual(args.slice(2, 4), ['run', '--auto']);
+            assert.equal(args.includes('--dir'), false);
           }
         }
         {
@@ -40,12 +39,15 @@ test('engine launch overrides and defaults', async () => {
           await manager.run(engine, 'Inspect the task', cwd, undefined, false, yolo, model, effort);
           const { command, args } = launches.at(-1);
           assert.equal(command, 'cmd.exe');
-          assert.equal(args[args.indexOf('--model') + 1], model);
+          if (engine !== 'opencode') assert.equal(args[args.indexOf('--model') + 1], model);
           if (engine === 'codex') {
             assert.equal(args[2], 'exec');
             assert.equal(args[args.indexOf('-c') + 1], 'model_reasoning_effort=max');
           }
-          if (engine === 'opencode') assert.equal(args[args.indexOf('--variant') + 1], 'max');
+          if (engine === 'opencode') {
+            assert.equal(args[args.indexOf('--model') + 1], `${model}#max`);
+            assert.equal(args.includes('--variant'), false);
+          }
           if (engine === 'claude') {
             assert.equal(args[1], 'claude');
             assert.equal(args[args.indexOf('--effort') + 1], 'max');
@@ -59,7 +61,9 @@ test('engine launch overrides and defaults', async () => {
       for (const engine of ['codex', 'opencode', 'claude']) {
         await manager.run(engine, 'Inspect the task', cwd, undefined, false, false, undefined, 'max');
         assert.equal(launches.at(-1).args.includes('--model'), false);
-        assert.ok(launches.at(-1).args.includes(engine === 'codex' ? 'model_reasoning_effort=max' : engine === 'claude' ? '--effort' : '--variant'));
+        // OpenCode 2 carries the variant inside --model, so an effort alone has nowhere to go.
+        if (engine === 'opencode') assert.equal(launches.at(-1).args.includes('--variant'), false);
+        else assert.ok(launches.at(-1).args.includes(engine === 'codex' ? 'model_reasoning_effort=max' : '--effort'));
       }
     }
     {
@@ -279,36 +283,6 @@ test('codex banner "none" with no effort requested becomes the model table defau
     assert.equal((await observe('gpt-table-1')).reasoning_effort, 'none');
   } finally {
     if (codexHome === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = codexHome;
-    await rm(cwd, { recursive: true, force: true });
-  }
-});
-
-test('OpenCode 2 gets no --dir or --variant, and its variant rides in --model', async () => {
-  const cwd = await mkdtemp(join(process.cwd(), '.syndic-test-'));
-  const launches = [];
-  const launch = async (command, args) => {
-    launches.push(args);
-    const proc = new EventEmitter();
-    proc.stdout = new EventEmitter();
-    proc.stderr = new EventEmitter();
-    return { proc, receipt: async () => ({ pid: 123, termination: 'stopped', exit_code: 0 }),
-      stop: () => { queueMicrotask(() => proc.emit('close', 0)); } };
-  };
-  const { EngineManager, setOpenCodeRunHelp, openCodeRunSupports } = await import('../dist/engine.js');
-  const manager = new EngineManager(launch);
-  try {
-    setOpenCodeRunHelp('FLAGS\n  --standalone  Run with a private server\n  --model, -m string  Model\n');
-    assert.equal(openCodeRunSupports('--dir'), false);
-    await manager.run('opencode', 'Inspect the task', cwd, undefined, false, false, 'openai/gpt-6-astra', 'max');
-    const args = launches.at(-1);
-    assert.equal(args.includes('--dir'), false);
-    assert.equal(args.includes('--variant'), false);
-    assert.equal(args[args.indexOf('--model') + 1], 'openai/gpt-6-astra#max');
-    setOpenCodeRunHelp('   ');
-    assert.equal(openCodeRunSupports('--dir'), true);
-  } finally {
-    setOpenCodeRunHelp(undefined);
-    await manager.shutdown();
     await rm(cwd, { recursive: true, force: true });
   }
 });

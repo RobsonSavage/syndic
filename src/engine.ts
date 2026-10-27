@@ -1,4 +1,3 @@
-import { spawnSync } from 'node:child_process';
 import { readFileSync, statSync, watch, type FSWatcher } from 'node:fs';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
@@ -134,19 +133,6 @@ RULES:
 // Engine Manager
 // ---------------------------------------------------------------------------
 
-let openCodeRunHelp: string | undefined;
-/** OpenCode 2 dropped --dir and --variant from `run`. An unreadable help text keeps the older flags. */
-export function openCodeRunSupports(flag: string): boolean {
-  openCodeRunHelp ??= spawnSync('cmd.exe', ['/d', '/s', '/c', 'opencode run --help'],
-    { encoding: 'utf8', windowsHide: true, timeout: 15000 }).stdout ?? '';
-  return !openCodeRunHelp.trim() || new RegExp(`(^|\\s)${flag}(\\s|,|$)`, 'm').test(openCodeRunHelp);
-}
-
-/** Test hook: replaces the probed `opencode run --help` text; undefined probes the installed CLI again. */
-export function setOpenCodeRunHelp(text: string | undefined): void {
-  openCodeRunHelp = text;
-}
-
 export class EngineManager {
   private tasks = new Map<string, Task>();
   private processes = new Map<string, ManagedProcess>();
@@ -276,23 +262,15 @@ export class EngineManager {
     // --- launch through the Windows process-job supervisor ---
     const config = ENGINE_CONFIGS[engine];
     const baseModeArgs = yolo ? config.yoloArgs : config.safeArgs;
-    // OpenCode 1 ignores the inherited OS cwd on Windows and needs --dir set
-    // explicitly; otherwise write tools resolve to the wrong directory and
-    // the sentinel/output files never appear. --dir is a `run` subcommand
-    // flag, so it must be injected after 'run' - we splice it directly into
-    // modeArgs for opencode. OpenCode 2 has no --dir and uses the process cwd.
+    // OpenCode 2 has no --dir and uses the process cwd, and takes the variant inside --model.
     // Codex refuses an untracked working directory unless the caller states it
     // knows the engine will write files no revision control can undo. Review
     // mode carries its own copy of the flag: it works in a temporary directory.
-    const modeArgs =
-      engine === 'opencode' ? [...baseModeArgs, ...(openCodeRunSupports('--dir') ? ['--dir', workDir] : [])]
-        : skipGitRepoCheck ? [...baseModeArgs, '--skip-git-repo-check'] : baseModeArgs;
+    const modeArgs = engine !== 'opencode' && skipGitRepoCheck ? [...baseModeArgs, '--skip-git-repo-check'] : baseModeArgs;
     const promptArgs = config.promptFlag ? [config.promptFlag, bootPrompt] : [bootPrompt];
-    // OpenCode 2 takes the variant inside --model (provider/model#variant), not as --variant.
-    const openCodeReview = engine === 'opencode' && (reviewer !== undefined || !openCodeRunSupports('--variant'));
     const modelArgs = launchModel === undefined ? []
-      : ['--model', openCodeReview && launchEffort !== undefined ? `${launchModel}#${launchEffort}` : launchModel];
-    const effortArgs = launchEffort === undefined || openCodeReview ? [] : engine === 'codex'
+      : ['--model', engine === 'opencode' && launchEffort !== undefined ? `${launchModel}#${launchEffort}` : launchModel];
+    const effortArgs = launchEffort === undefined || engine === 'opencode' ? [] : engine === 'codex'
       ? ['-c', `model_reasoning_effort=${launchEffort}`]
       : [engine === 'claude' ? '--effort' : '--variant', launchEffort];
     const spawnArgs = reviewer ? [...reviewer.args.slice(0, -1), ...modelArgs, ...effortArgs, reviewer.args.at(-1)!]
