@@ -35,7 +35,7 @@ server.tool(
   'syndic_run',
   [
     'Spawn an external AI CLI engine to execute a task.',
-    'For Claude/Codex critiques, reviews, and read-only design consultations, use mode=review and yolo=false; syndic saves the final response.',
+    'For Claude/Codex critiques, reviews, and read-only design consultations, use mode=review and yolo=false; syndic saves the final response. OpenCode also supports mode=review, but its helper tools cannot be hidden: the prompt forbids them and a review that calls one is rejected.',
     'Default mode requires the engine to write output and completion files; a response-only exit is a failure.',
     'Default: returns task_id immediately (async). Set wait=true to block until done.',
   ].join(' '),
