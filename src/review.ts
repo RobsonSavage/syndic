@@ -2,7 +2,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { mkdtemp, mkdir, writeFile, readFile, rename, rm, realpath, stat } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SEMANTIC_TOOLS, type EngineType, type Task } from './types.js';
@@ -164,6 +164,21 @@ export function openCodeProviderKeys(model: string): string[] {
   return [`${provider}_API_KEY`, ...(provider === 'GOOGLE' ? ['GEMINI_API_KEY', 'GOOGLE_GENERATIVE_AI_API_KEY'] : []), 'OPENCODE_API_KEY'];
 }
 
+/**
+ * The top-level "model" of OpenCode's own config. Review mode runs with an empty home and never loads that config,
+ * so only the model name is read to stand in for an omitted `model`. Same identifier rule as a caller-supplied model,
+ * because the value reaches cmd.exe.
+ * shortcut: reads config.json only (no JSONC, no other file names), extend when a config uses another name.
+ */
+export async function openCodeConfigModel(configDir: string = join(homedir(), '.config', 'opencode')): Promise<string | undefined> {
+  try {
+    const model = JSON.parse(await readFile(join(configDir, 'config.json'), 'utf8'))?.model;
+    return typeof model === 'string' && model.includes('/') && /^[A-Za-z0-9][A-Za-z0-9._:/-]*$/.test(model) ? model : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** OpenCode review mode cannot hide tools.opencode.* from the model, so a call to it is found after the fact. */
 export function openCodePolicyViolation(part: { tool?: unknown; state?: { input?: { code?: unknown } } } | undefined): string | undefined {
   const tool = typeof part?.tool === 'string' ? part.tool : '';
@@ -184,8 +199,8 @@ const OPENCODE_READ_ONLY_HELPERS = new Set(['models', 'list_mcp_resources', 'rea
 export async function prepareReview(engine: EngineType, root: string, prompt: string,
   options: ReviewOptions, auditPath?: string, model?: string): Promise<ReviewLaunch> {
   if (engine !== 'claude' && engine !== 'codex' && engine !== 'opencode') throw new Error('Review mode supports Claude, Codex and OpenCode only');
-  // OpenCode picks its default model from the user's config, which this mode does not load.
-  if (engine === 'opencode' && !model?.includes('/')) throw new Error('OpenCode review mode needs model as provider/model.');
+  // The engine fills an omitted model from OpenCode's config (openCodeConfigModel); what reaches here is all there is.
+  if (engine === 'opencode' && !model?.includes('/')) throw new Error('OpenCode review mode needs model as provider/model, and the OpenCode config names no top-level "model".');
   const roslyn = await resolveReviewRoslyn(options.roslyn);
   const semantic = roslyn.roslyn ? await semanticTools(roslyn.roslyn) : [];
   const defaults = options.defaults === false ? { skills: [], mcp: [], notes: [] } : await loadReviewDefaults();

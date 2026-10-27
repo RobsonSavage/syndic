@@ -204,6 +204,11 @@ tools denied. OpenCode 2 reaches MCP tools through its `execute` tool and cannot
 prompt forbids the state-changing ones, and a review whose events show a call to one (read-only helpers such as `models` and `worktree_list` pass), or to any tool other than
 `execute`, is rejected after the fact. A helper call that already ran is not undone.
 
+When `model` is omitted, OpenCode review mode uses the top-level `model` in
+`~/.config/opencode/config.json`. Only that name is read. The config itself stays unloaded, so a
+provider defined there (for example `ollama/...`) has no route in the empty home and OpenCode
+answers `provider.no-route`. Use a model whose provider is built in and whose API key is in the environment.
+
 Claude review launches preserve the CLI's built-in tool guidance and append the
 review instructions; personal and project instruction files remain disabled.
 If a review returns literal tool invocation text (including after a prose opening),

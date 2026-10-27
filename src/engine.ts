@@ -6,7 +6,7 @@ import { join, resolve } from 'node:path';
 import { nanoid } from 'nanoid';
 import { launchProcess, type ManagedProcess } from './process.js';
 import { parseSentinel } from './sentinel.js';
-import { prepareReview, LiteralToolInvocationError, ReviewEvidenceError, type ReviewOptions, type ReviewLaunch } from './review.js';
+import { prepareReview, openCodeConfigModel, LiteralToolInvocationError, ReviewEvidenceError, type ReviewOptions, type ReviewLaunch } from './review.js';
 import {
   type Task,
   type TaskStatus,
@@ -197,7 +197,8 @@ export class EngineManager {
     // with a 400. Treat it as the omission it was meant to be; `requested`
     // still records what the caller asked for.
     const omitDefault = (value?: string) => value?.toLowerCase() === 'default' ? undefined : value;
-    const launchModel = omitDefault(model);
+    // OpenCode review mode loads no user config, so an omitted model comes from the config's top-level "model".
+    const launchModel = omitDefault(model) ?? (review && engine === 'opencode' ? await openCodeConfigModel() : undefined);
     const launchEffort = omitDefault(reasoningEffort);
     if (launchEffort !== undefined && engine === 'gemini') {
       throw new Error(`reasoning_effort is not supported for ${engine}.`);
