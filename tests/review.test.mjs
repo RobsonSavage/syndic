@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { mkdtemp, writeFile, readFile, realpath, mkdir, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import { ReviewAccess } from '../dist/review-access.js';
-import { prepareReview, resolveReviewRoslyn, reviewEnvironment } from '../dist/review.js';
+import { openCodeConfigModel, prepareReview, resolveReviewRoslyn, reviewEnvironment } from '../dist/review.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
@@ -194,6 +195,23 @@ test('OpenCode review needs provider/model and runs with an empty home and stand
     const protocol = await readFile(join(launch.cwd, 'task.prompt'), 'utf8');
     assert.match(protocol, /Never call tools\.opencode\.session_\*/);
   } finally { await launch.cleanup(); }
+});
+
+test('openCodeConfigModel reads only a safe provider/model from the top level of config.json', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'syndic-ocmodel-'));
+  try {
+    assert.equal(await openCodeConfigModel(dir), undefined);
+    for (const [content, expected] of [
+      [JSON.stringify({ model: 'ollama/glm-5.3:cloud', agent: { a: { model: 'x/y' } } }), 'ollama/glm-5.3:cloud'],
+      [JSON.stringify({ agent: { a: { model: 'x/y' } } }), undefined],
+      [JSON.stringify({ model: 'nomodelprovider' }), undefined],
+      [JSON.stringify({ model: 'a/b & calc' }), undefined],
+      ['{ not json', undefined],
+    ]) {
+      await writeFile(join(dir, 'config.json'), content, 'utf8');
+      assert.equal(await openCodeConfigModel(dir), expected, content);
+    }
+  } finally { await rm(dir, { recursive: true, force: true }); }
 });
 
 test('OpenCode review rejects tools.opencode calls and other tools, and reads the last step as the report', async () => {
