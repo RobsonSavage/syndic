@@ -206,9 +206,9 @@ prompt forbids the state-changing ones, and a review whose events show a call to
 
 When `model` is omitted, OpenCode review mode uses the first `favorite` entry of
 `~/.local/state/opencode/model.json` (the picker's state), else the top-level `model` in
-`~/.config/opencode/config.json`, else the first `recent` entry of `model.json`. API keys in the
-environment play no part in the choice. Only the model name is read, plus the provider block for that model
-when `config.json` defines it with no option except `baseURL` (a local server such as `ollama`). A block with
+`~/.config/opencode/opencode.json` (`config.json` when `opencode.json` is absent), else the first `recent`
+entry of `model.json`. API keys in the environment play no part in the choice. Only the model name is read,
+plus the provider block for that model when that file defines it with no option except `baseURL` (a local server such as `ollama`). A block with
 an `apiKey` or other options is never copied. The block is also passed for a `model` you name yourself.
 Syndic does not check that a local server is running.
 

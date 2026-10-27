@@ -168,6 +168,10 @@ const readJson = async (path: string): Promise<any> => {
   try { return JSON.parse(await readFile(path, 'utf8')); } catch { return undefined; }
 };
 
+/** OpenCode 2.x reads opencode.json and ignores config.json; an install that predates it has only config.json. */
+const readOpenCodeConfig = async (configDir: string): Promise<any> =>
+  (await readJson(join(configDir, 'opencode.json'))) ?? readJson(join(configDir, 'config.json'));
+
 /**
  * A custom provider block that is safe to hand to the review run: an object whose only option is baseURL (a local
  * server such as ollama). Anything else, apiKey and headers included, would put a secret in the config or drop a setting.
@@ -177,26 +181,26 @@ function forwardableProvider(block: any): object | undefined {
 }
 
 /**
- * The provider block for the model's provider from OpenCode's config.json. Review mode runs with an empty home and loads
+ * The provider block for the model's provider from OpenCode's opencode.json (config.json when that is absent). Review mode runs with an empty home and loads
  * no config, so a custom provider (ollama) has no route unless its block is passed in.
  */
 export async function openCodeProviderBlock(model: string, configDir: string = join(homedir(), '.config', 'opencode')): Promise<object | undefined> {
-  return forwardableProvider((await readJson(join(configDir, 'config.json')))?.provider?.[model.split('/')[0]]);
+  return forwardableProvider((await readOpenCodeConfig(configDir))?.provider?.[model.split('/')[0]]);
 }
 
 /**
  * The model OpenCode itself would start with: the first favorite of the picker's state file (model.json), then the
- * top-level "model" of config.json, then the most recent model in model.json. Review mode runs with an empty home and loads neither
+ * top-level "model" of opencode.json (config.json when that is absent), then the most recent model in model.json. Review mode runs with an empty home and loads neither
  * file, so only the model name is read to stand in for an omitted `model`. Environment API keys play no part in the
  * choice: an unreachable provider fails in OpenCode with its own error.
  * Same identifier rule as a caller-supplied model, because the value reaches cmd.exe.
- * shortcut: reads config.json and model.json only (no JSONC, no other file names), extend when a config uses another name.
+ * shortcut: reads opencode.json, config.json and model.json only (no JSONC, no other file names), extend when a config uses another name.
  */
 export async function openCodeConfigModel(
   configDir: string = join(homedir(), '.config', 'opencode'),
   stateDir: string = join(homedir(), '.local', 'state', 'opencode'),
 ): Promise<string | undefined> {
-  const config = await readJson(join(configDir, 'config.json'));
+  const config = await readOpenCodeConfig(configDir);
   const state = await readJson(join(stateDir, 'model.json'));
   const entry = (e: any): string | undefined =>
     typeof e?.providerID === 'string' && typeof e?.modelID === 'string' ? `${e.providerID}/${e.modelID}` : undefined;

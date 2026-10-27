@@ -259,6 +259,20 @@ test('OpenCode review rejects tools.opencode calls and other tools, and reads th
   } finally { await launch.cleanup(); }
 });
 
+test('OpenCode config is read from opencode.json, and config.json only when opencode.json is absent or unparseable', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'syndic-ocmodel-'));
+  const state = await mkdtemp(join(tmpdir(), 'syndic-ocstate-'));
+  const provider = (name) => ({ provider: { ollama: { options: { baseURL: `http://${name}/v1` } } } });
+  try {
+    await writeFile(join(dir, 'config.json'), JSON.stringify({ model: 'old/model', ...provider('legacy') }), 'utf8');
+    assert.equal(await openCodeConfigModel(dir, state), 'old/model', 'config.json is the fallback');
+    await writeFile(join(dir, 'opencode.json'), JSON.stringify({ model: 'new/model', ...provider('current') }), 'utf8');
+    assert.equal(await openCodeConfigModel(dir, state), 'new/model', 'opencode.json wins');
+    assert.deepEqual(await openCodeProviderBlock('ollama/x', dir), { options: { baseURL: 'http://current/v1' } });
+    await writeFile(join(dir, 'opencode.json'), '{ not json', 'utf8');
+    assert.equal(await openCodeConfigModel(dir, state), 'old/model', 'unparseable opencode.json falls back');
+  } finally { await rm(dir, { recursive: true, force: true }); await rm(state, { recursive: true, force: true }); }
+});
 test('openCodeConfigModel ignores API keys in the environment, and openCodeProviderBlock forwards only a keyless block', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'syndic-ocmodel-'));
   const state = await mkdtemp(join(tmpdir(), 'syndic-ocstate-'));

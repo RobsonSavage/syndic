@@ -66,7 +66,7 @@ server.tool(
       .optional()
       .describe(
         'If true, run with no guardrails: Gemini uses --yolo, Codex uses --dangerously-bypass-approvals-and-sandbox. ' +
-        'Opencode has no safe/yolo distinction at the CLI level (permissions are enforced via ~/.config/opencode/config.json). ' +
+        'Opencode has no safe/yolo distinction at the CLI level (permissions are enforced via ~/.config/opencode/opencode.json). ' +
         'Claude safe mode uses dontAsk; unapproved operations are denied. ' +
         'Default: false. These engine defaults are not a read-only review boundary.',
       ),
