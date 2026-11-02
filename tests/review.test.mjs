@@ -182,6 +182,27 @@ test('review reads only tracked files and explicit inputs, with bounded ranges',
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
+test('review lists tracked files in a repo that git treats as owned by another account', async () => {
+  const cwd = await mkdtemp(join(process.cwd(), '.syndic-owner-'));
+  const previous = process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER;
+  try {
+    const root = join(cwd, 'repo');
+    await mkdir(root);
+    execFileSync('git', ['init', '--quiet', root]);
+    await writeFile(join(root, 'source.txt'), 'first');
+    execFileSync('git', ['-C', root, 'add', 'source.txt']);
+    // Git's own hook for simulating a foreign owner; GIT_CONFIG_GLOBAL=/dev/null hides any user safe.directory entry.
+    process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER = '1';
+    const access = new ReviewAccess(await realpath(root));
+    await access.initialize([]);
+    assert.deepEqual(access.list(), ['source.txt']);
+  } finally {
+    if (previous === undefined) delete process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER;
+    else process.env.GIT_TEST_ASSUME_DIFFERENT_OWNER = previous;
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test('OpenCode review needs provider/model and runs with an empty home and standalone server', async () => {
   await assert.rejects(prepareReview('opencode', process.cwd(), 'Review.', { inputs: [] }), /provider\/model/);
   const launch = await prepareReview('opencode', process.cwd(), 'Review.', { inputs: [] }, undefined, 'deepseek/deepseek-flash');

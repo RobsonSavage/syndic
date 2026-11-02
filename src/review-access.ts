@@ -15,8 +15,11 @@ export class ReviewAccess {
   constructor(readonly root: string) { }
 
   async git(args: string[]): Promise<string> {
+    // GIT_CONFIG_NOSYSTEM/GLOBAL below also drop the user's safe.directory entries, so a repo owned by
+    // another account (a copied drive, an elevated checkout) fails ls-files with "dubious ownership" and
+    // the broker dies before its MCP handshake. The root is the repo the caller chose to review.
     const result = await exec('git.exe', ['--no-optional-locks', '-c', 'core.fsmonitor=false',
-      '-c', 'core.pager=cat', ...args], { cwd: this.root, windowsHide: true, timeout: 30_000,
+      '-c', 'core.pager=cat', '-c', `safe.directory=${this.root.replaceAll('\\', '/')}`, ...args], { cwd: this.root, windowsHide: true, timeout: 30_000,
       maxBuffer: 8 * 1024 * 1024, env: { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null' } });
     return result.stdout;
   }
