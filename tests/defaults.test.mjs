@@ -204,6 +204,7 @@ test('extra server discovery runs from the review root, like the broker', { time
   const repo = await mkdtemp(join(tmpdir(), 'syndic-rel-'));
   let launch;
   try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
     await writeFile(join(repo, 'boot.mjs'), `await import(${JSON.stringify(pathToFileURL(resolve('tests/fixtures/extra-mcp.mjs')).href)});\n`);
     launch = await prepareReview('claude', repo, 'Review the repository.',
       { inputs: [], defaults: false, mcp: [{ name: 'rel', command: process.execPath, args: ['boot.mjs'], tools: ['echo'] }] });
@@ -217,6 +218,7 @@ test('a chatty extra server does not stall tool discovery', { timeout: 60000 }, 
   const repo = await mkdtemp(join(tmpdir(), 'syndic-noisy-'));
   let launch;
   try {
+    execFileSync('git', ['init', '-q'], { cwd: repo });
     const started = Date.now();
     const marker = join(repo, 'noise.marker');
     launch = await prepareReview('claude', repo, 'Review the repository.', { inputs: [], defaults: false,

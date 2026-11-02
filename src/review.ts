@@ -7,6 +7,7 @@ import { isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { SEMANTIC_TOOLS, type EngineType, type Task } from './types.js';
 import { loadReviewDefaults, mergeMcp, resolveSkills, type McpSpec } from './defaults.js';
+import { ReviewAccess } from './review-access.js';
 
 export interface ReviewOptions {
   inputs: string[];
@@ -225,11 +226,25 @@ export function openCodePolicyViolation(part: { tool?: unknown; state?: { input?
 // Built-in OpenCode 2.1.2 helpers that only read. Every other tools.opencode.* helper is rejected.
 const OPENCODE_READ_ONLY_HELPERS = new Set(['models', 'list_mcp_resources', 'read_mcp_resource', 'worktree_list']);
 
+// The broker's first act is git ls-files. When git fails there, the broker dies before its MCP handshake and
+// the CLI only reports "no tools", with the broker's stderr gone. Run git through the broker's own wrapper
+// here, so the caller gets git's message.
+async function assertBrokerCanRunGit(root: string): Promise<void> {
+  try {
+    await new ReviewAccess(await realpath(root)).git(['rev-parse', '--git-dir']);
+  } catch (error) {
+    const failure = error as { stderr?: string; message?: string };
+    const reason = failure.stderr?.trim().split(/\r?\n/)[0] || failure.message || String(error);
+    throw new Error(`Review broker cannot run git in ${root}: ${reason}`);
+  }
+}
+
 export async function prepareReview(engine: EngineType, root: string, prompt: string,
   options: ReviewOptions, auditPath?: string, model?: string): Promise<ReviewLaunch> {
   if (engine !== 'claude' && engine !== 'codex' && engine !== 'opencode') throw new Error('Review mode supports Claude, Codex and OpenCode only');
   // The engine fills an omitted model from OpenCode's config (openCodeConfigModel); what reaches here is all there is.
   if (engine === 'opencode' && !model?.includes('/')) throw new Error('OpenCode review mode needs model as provider/model, and neither the OpenCode config nor its model.json names one.');
+  await assertBrokerCanRunGit(root);
   const roslyn = await resolveReviewRoslyn(options.roslyn);
   const semantic = roslyn.roslyn ? await semanticTools(roslyn.roslyn) : [];
   const defaults = options.defaults === false ? { skills: [], mcp: [], notes: [] } : await loadReviewDefaults();

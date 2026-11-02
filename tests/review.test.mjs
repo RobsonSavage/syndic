@@ -203,6 +203,14 @@ test('review lists tracked files in a repo that git treats as owned by another a
   }
 });
 
+test('review fails at launch with git\'s own message when the root is not a git repository', async () => {
+  const cwd = await mkdtemp(join(tmpdir(), 'syndic-nogit-'));
+  try {
+    await assert.rejects(prepareReview('claude', cwd, 'Review.', { inputs: [] }),
+      /Review broker cannot run git in .*not a git repository/i);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
 test('OpenCode review needs provider/model and runs with an empty home and standalone server', async () => {
   await assert.rejects(prepareReview('opencode', process.cwd(), 'Review.', { inputs: [] }), /provider\/model/);
   const launch = await prepareReview('opencode', process.cwd(), 'Review.', { inputs: [] }, undefined, 'deepseek/deepseek-flash');
