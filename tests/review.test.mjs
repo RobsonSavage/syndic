@@ -150,7 +150,11 @@ test('both review engines receive the evidence inventory and attribution protoco
     const launch = await prepareReview(engine, process.cwd(), 'Review the supplied code.', { inputs: [] });
     try {
       assert.match(launch.args.at(-1), /review_status/);
-      if (engine === 'codex') assert.ok(launch.args.includes('mcp_servers.syndic_review.startup_timeout_sec=240'));
+      if (engine === 'codex') {
+        assert.ok(launch.args.includes('mcp_servers.syndic_review.startup_timeout_sec=240'));
+        assert.ok(launch.args.includes('--dangerously-bypass-hook-trust'));
+        assert.ok(launch.args.includes('features.hooks=false'));
+      }
       const prompt = await readFile(join(launch.cwd, 'task.prompt'), 'utf8');
       assert.match(prompt, /supplied_inputs/);
       assert.match(prompt, /not committed HEAD or index blobs/);

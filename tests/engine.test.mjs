@@ -28,6 +28,7 @@ test('engine launch overrides and defaults', async () => {
           assert.equal(args.includes('--effort'), false);
           assert.equal(args.some(arg => arg.startsWith('model_reasoning_effort=')), false);
           assert.equal(options.windowsHide, true);
+          assert.equal(args.includes('--dangerously-bypass-hook-trust'), engine === 'codex');
           if (engine === 'opencode') {
             assert.deepEqual(args.slice(2, 4), ['run', '--auto']);
             assert.equal(args.includes('--dir'), false);

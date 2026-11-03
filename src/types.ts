@@ -52,8 +52,8 @@ export const ENGINE_CONFIGS: Record<EngineType, EngineConfig> = {
     // Codex >= 0.150 dropped --full-auto and the sandbox_permissions config key.
     // -s workspace-write is the equivalent: writes confined to the workspace,
     // reads unrestricted, no approval prompts (codex exec never prompts).
-    safeArgs: ['exec', '-s', 'workspace-write'],
-    yoloArgs: ['exec', '--dangerously-bypass-approvals-and-sandbox'],
+    safeArgs: ['exec', '--dangerously-bypass-hook-trust', '-s', 'workspace-write'],
+    yoloArgs: ['exec', '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox'],
     promptFlag: '',
   },
   // -p triggers headless mode.

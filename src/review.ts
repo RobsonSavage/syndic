@@ -347,7 +347,7 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
         `mcp_servers.syndic_review.command=${JSON.stringify(server.command)}`,
         `mcp_servers.syndic_review.args=${JSON.stringify(server.args)}`,
         'mcp_servers.syndic_review.startup_timeout_sec=240', 'mcp_servers.syndic_review.tool_timeout_sec=120'];
-      args = ['exec', '--ignore-user-config', '--ignore-rules', '--strict-config', '--ephemeral',
+      args = ['exec', '--dangerously-bypass-hook-trust', '--ignore-user-config', '--ignore-rules', '--strict-config', '--ephemeral',
         '--skip-git-repo-check', '-s', 'read-only', ...overrides.flatMap(value => ['-c', value]), '-o', 'response.md', boot];
     }
     let response = '';
