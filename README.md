@@ -180,10 +180,12 @@ review MCP server is configured. Installed CLIs must support these controls;
 unsupported flags fail the run instead of falling back to default mode.
 
 The broker exposes tracked-file listing and bounded reads, explicit evidence-file
-reads, diffs between full SHAs (external diff/textconv disabled), repository
-status, and `search_files` (a case-insensitive `git grep` over tracked files of every
+reads, paged diffs between any two commits (SHA, branch, tag or `HEAD~n`; external
+diff/textconv disabled), repository status, and `search_files` (a case-insensitive `git grep` over tracked files of every
 type, plain text or `regex: true`). Paths escaping the source root are denied unless explicitly supplied as
 review inputs. It has no arbitrary command, write, publication, or memory tools.
+Any reply over 60,000 characters is dropped with an error, because Claude Code saves
+a larger MCP result to a file the reviewer cannot read.
 `review_status` lists all supplied inputs, including snapshots outside the repository
 that do not appear in `list_files`. `read_file` labels current disk reads as
 `working_tree` or `supplied_input`, with a resolved path and no asserted revision.

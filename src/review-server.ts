@@ -6,7 +6,7 @@ import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolRequest, ty
 import { appendFile, readFile, realpath } from 'node:fs/promises';
 import { dirname, isAbsolute, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { ReviewAccess, inside } from './review-access.js';
+import { ReviewAccess, inside, replySize } from './review-access.js';
 import { SEMANTIC_TOOLS } from './types.js';
 
 // Codex asks for the tool list milliseconds after the transport connects and
@@ -27,6 +27,13 @@ const access = new ReviewAccess(root);
 await access.initialize(cfg.inputs);
 const server = new Server({ name: 'syndic-review', version: '1' }, { capabilities: { tools: { listChanged: true } } });
 const reply = (value: unknown) => ({ content: [{ type: 'text' as const, text: typeof value === 'string' ? value : JSON.stringify(value) }] });
+// Claude Code saves an MCP result over about 25,000 tokens to a file the reviewer cannot read, so no reply may reach it.
+const MAX_REPLY_CHARS = 60_000;
+function capReply<T extends object>(result: T): T | ReturnType<typeof reply> & { isError: true } {
+  const size = replySize(result);
+  if (size <= MAX_REPLY_CHARS) return result;
+  return { ...reply(`Reply of ${size} characters exceeds the ${MAX_REPLY_CHARS} limit and was dropped. Narrow the request: a smaller limit, a path, a prefix or a later offset. If it cannot be narrowed, report a coverage gap.`), isError: true };
+}
 let roslyn: Client | undefined;
 // Named before the workspace is open, so the reviewer's fixed tool inventory
 // includes them. Every call waits on the attach that makes them answerable.
@@ -210,7 +217,7 @@ const fileTools: Tool[] = [
   { name: 'review_status', description: 'Repository HEAD/status, complete supplied-input inventory, read semantics and semantic-tool availability. Check before reviewing.', inputSchema: { type: 'object', properties: {} } },
   { name: 'list_files', description: 'List tracked source paths by optional prefix with pagination; total includes unread pages.', inputSchema: { type: 'object', properties: { prefix: { type: 'string' }, offset: { type: 'integer' }, limit: { type: 'integer' } } } },
   { name: 'read_file', description: 'Read current disk contents of a tracked working-tree file or supplied input, with provenance and 1-based lines. This does not read committed HEAD or the index. Supplied paths are listed by review_status.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, offset: { type: 'integer' }, limit: { type: 'integer' } }, required: ['path'] } },
-  { name: 'git_diff', description: 'Read a diff between full commit SHAs, with external diff and textconv disabled.', inputSchema: { type: 'object', properties: { base: { type: 'string' }, head: { type: 'string' } }, required: ['base', 'head'] } },
+  { name: 'git_diff', description: 'Read one page of a diff between two commits (SHA, branch, tag or HEAD~n), with external diff and textconv disabled. The first page lists the changed files (a prefix when there are many; files_total is the count). Pass path to read one file, and offset=next_offset for the next page until next_offset is null. Join the text of all pages with no separator. A very long line is split across pages.', inputSchema: { type: 'object', properties: { base: { type: 'string' }, head: { type: 'string' }, path: { type: 'string' }, offset: { type: 'integer' } }, required: ['base', 'head'] } },
   { name: 'search_files', description: 'Case-insensitive text search over tracked files of every type (.cs, .sql, json, docs, scripts), reading the working tree. Plain text by default; regex=true for an extended regular expression. Returns path:line:text.', inputSchema: { type: 'object', properties: { pattern: { type: 'string' }, prefix: { type: 'string' }, regex: { type: 'boolean' }, limit: { type: 'integer' } }, required: ['pattern'] } },
 ];
 // Extra tools keep the annotations their server declared; launch already dropped the ones that change state.
@@ -239,7 +246,8 @@ async function callTool(request: CallToolRequest) {
         return reply({ files: files.slice(Number(offset), Number(offset) + Number(limit)), total: files.length, offset });
       }
       case 'read_file': return reply(await access.read(String(args.path), args.offset as number | undefined, args.limit as number | undefined));
-      case 'git_diff': return reply(await access.diff(String(args.base), String(args.head)));
+      case 'git_diff': return reply(await access.diff(String(args.base), String(args.head),
+        String(args.path ?? ''), args.offset as number | undefined));
       case 'search_files': return reply(await access.search(String(args.pattern ?? ''), String(args.prefix ?? ''),
         args.limit as number | undefined, args.regex === true));
       default: {
@@ -272,7 +280,7 @@ async function callTool(request: CallToolRequest) {
 
 let auditWrite = Promise.resolve();
 server.setRequestHandler(CallToolRequestSchema, async request => {
-  const result = await callTool(request);
+  const result = capReply(await callTool(request));
   if (cfg.audit_path === undefined) return result;
   try {
     const success = !('isError' in result && result.isError);

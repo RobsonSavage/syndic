@@ -4,7 +4,7 @@ import { mkdtemp, writeFile, readFile, realpath, mkdir, rm } from 'node:fs/promi
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
-import { ReviewAccess } from '../dist/review-access.js';
+import { ReviewAccess, replySize, splitUnits } from '../dist/review-access.js';
 import { openCodeConfigModel, openCodeProviderBlock, prepareReview, resolveReviewRoslyn, reviewEnvironment } from '../dist/review.js';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
@@ -163,6 +163,81 @@ test('both review engines receive the evidence inventory and attribution protoco
   }
 });
 
+test('git_diff stays lossless and under the cap for long lines, many long paths and renames', async () => {
+  const cwd = await mkdtemp(join(process.cwd(), '.syndic-diff-'));
+  try {
+    const git = (...args) => execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args]);
+    git('init', '--quiet');
+    await writeFile(join(cwd, 'old.txt'), 'keep\nkeep\nkeep\nkeep\n');
+    git('add', '.');
+    git('commit', '--quiet', '-m', 'one');
+    git('mv', 'old.txt', 'new name.txt');
+    // 25,000 plain characters, 25,000 control characters (6 escaped characters each) and an astral character run.
+    await writeFile(join(cwd, 'long.txt'), ['x'.repeat(25_000), '\u0001'.repeat(25_000), '\u{1F600}'.repeat(30_000), 'tail'].join('\n') + '\n');
+    for (let i = 0; i < 220; i++) await writeFile(join(cwd, `${'d'.repeat(80)}${i}.txt`), `row ${i}\n`);
+    git('add', '.');
+    git('commit', '--quiet', '-m', 'two');
+    const access = new ReviewAccess(await realpath(cwd));
+    await access.initialize([]);
+    let page = await access.diff('HEAD~1', 'HEAD');
+    assert.equal(page.files_total, 223);
+    assert.ok(page.files.length < 223 && page.files.length === page.files_listed, 'file list is a bounded prefix');
+    assert.ok(page.files.some(file => file.endsWith('\tnew name.txt')) || page.files_listed < 223);
+    let text = '';
+    for (;;) {
+      assert.ok(JSON.stringify(page).length < 60_000, `page at ${page.offset} is ${JSON.stringify(page).length}`);
+      text += page.text;
+      if (page.next_offset === null) break;
+      page = await access.diff('HEAD~1', 'HEAD', '', page.next_offset);
+      assert.equal(page.files, undefined);
+      assert.equal(page.files_total, 223);
+    }
+    assert.equal(text, (await access.diff('HEAD~1', 'HEAD', '', 0, Infinity)).text);
+    assert.ok(text.includes('\u0001'.repeat(25_000)) && text.includes('\u{1F600}'.repeat(30_000)));
+    assert.ok(!text.includes('�'), 'no piece ends inside a surrogate pair');
+    // A rename is a delete plus an add, so each side is a usable path.
+    const moved = await access.diff('HEAD~1', 'HEAD', 'new name.txt');
+    assert.equal(moved.files_total, 1);
+    assert.match(moved.text, /\+keep/);
+    // path is a literal name, not a glob.
+    assert.equal((await access.diff('HEAD~1', 'HEAD', '*.txt')).files_total, 0);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('splitUnits restores its input and replySize counts every part of a reply', () => {
+  const sample = 'a\n' + 'b'.repeat(500) + '\n\u{1F600}'.repeat(40) + 'end';
+  const units = splitUnits(sample, 100);
+  assert.equal(units.join(''), sample);
+  assert.ok(units.every(unit => JSON.stringify(unit).length <= 100));
+  assert.equal(replySize({ content: [{ type: 'text', text: 'abc' }] }), 3 + JSON.stringify({}).length);
+  assert.ok(replySize({ content: [{ type: 'resource', resource: { uri: 'file:///x', text: 'y'.repeat(70_000) } }] }) > 60_000);
+  assert.ok(replySize({ content: [{ type: 'text', text: 'ok' }], structuredContent: { payload: 'x'.repeat(70_000) } }) > 60_000);
+  assert.equal(replySize({}), 2);
+});
+
+test('review broker drops a reply over the size cap instead of sending it', async () => {
+  const cwd = await mkdtemp(join(process.cwd(), '.syndic-cap-'));
+  const client = new Client({ name: 'review-cap-test', version: '1' });
+  try {
+    const root = join(cwd, 'repo');
+    await mkdir(root);
+    execFileSync('git', ['-C', root, 'init', '--quiet']);
+    await writeFile(join(root, 'wide.txt'), Array.from({ length: 200 }, () => 'y'.repeat(500)).join('\n'));
+    execFileSync('git', ['-C', root, 'add', 'wide.txt']);
+    const config = join(cwd, 'access.json');
+    await writeFile(config, JSON.stringify({ root, inputs: [] }));
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: ['dist/review-server.js', config], stderr: 'pipe' }));
+    const big = await client.callTool({ name: 'read_file', arguments: { path: 'wide.txt', limit: 200 } });
+    assert.equal(big.isError, true);
+    assert.match(big.content[0].text, /exceeds the 60000 limit/);
+    const small = await client.callTool({ name: 'read_file', arguments: { path: 'wide.txt', limit: 20 } });
+    assert.ok(!small.isError);
+  } finally {
+    await client.close();
+    await rm(cwd, { recursive: true, force: true });
+  }
+});
+
 test('review reads only tracked files and explicit inputs, with bounded ranges', async () => {
   const cwd = await mkdtemp(join(process.cwd(), '.syndic-access-'));
   try {
@@ -182,7 +257,43 @@ test('review reads only tracked files and explicit inputs, with bounded ranges',
     await assert.rejects(access.read('untracked.txt'), /Read denied/);
     await assert.rejects(access.read('../outside.txt'), /Read denied/);
     await assert.rejects(access.read('source.txt', 0), /offset/);
-    await assert.rejects(access.diff('HEAD', 'HEAD'), /Full commit SHAs/);
+    // git_diff once demanded full SHAs; it now resolves any revision, and refuses option-like ones.
+    await assert.rejects(access.diff('HEAD', 'HEAD'), /Unknown revision/);
+    await assert.rejects(access.diff('--output=x', 'HEAD'), /Revision must be/);
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('git_diff pages a large diff, resolves HEAD~1 and scopes to one path', async () => {
+  const cwd = await mkdtemp(join(process.cwd(), '.syndic-diff-'));
+  try {
+    const git = (...args) => execFileSync('git', ['-C', cwd, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args]);
+    git('init', '--quiet');
+    await writeFile(join(cwd, 'a.txt'), 'old\n');
+    await writeFile(join(cwd, 'b.txt'), 'old\n');
+    git('add', '.');
+    git('commit', '--quiet', '-m', 'one');
+    await writeFile(join(cwd, 'a.txt'), Array.from({ length: 3000 }, (_, i) => `line ${i} ${'x'.repeat(40)}`).join('\n') + '\n');
+    await writeFile(join(cwd, 'b.txt'), 'new\n');
+    git('commit', '--quiet', '-am', 'two');
+    const access = new ReviewAccess(await realpath(cwd));
+    await access.initialize([]);
+    let page = await access.diff('HEAD~1', 'HEAD');
+    assert.equal(page.files.length, 2);
+    assert.match(page.base, /^[0-9a-f]{40,64}$/);
+    assert.ok(page.next_offset > 0 && JSON.stringify(page).length < 60_000);
+    let text = page.text;
+    while (page.next_offset !== null) {
+      page = await access.diff('HEAD~1', 'HEAD', '', page.next_offset);
+      assert.equal(page.files, undefined);
+      assert.ok(JSON.stringify(page).length < 60_000);
+      text += page.text;
+    }
+    assert.equal(text, (await access.diff('HEAD~1', 'HEAD', '', 0, Infinity)).text);
+    const one = await access.diff('HEAD~1', 'HEAD', 'b.txt');
+    assert.equal(one.next_offset, null);
+    assert.match(one.text, /\+new/);
+    assert.doesNotMatch(one.text, /line 0/);
+    await assert.rejects(access.diff('HEAD~1', 'HEAD', '../x'), /plain repository path/);
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 

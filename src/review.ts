@@ -272,6 +272,7 @@ export async function prepareReview(engine: EngineType, root: string, prompt: st
       'Call review_status before inspecting evidence. Its supplied_inputs inventory includes files outside list_files.',
       'read_file reads current disk contents, not committed HEAD or index blobs. A tracked path is an access rule, not revision provenance.',
       'Attribute reads to working_tree or supplied_input as returned. A snapshot filename or matching contents does not prove a commit. git_diff compares only the requested commits.',
+      'git_diff returns one page. Call it first without path for the changed-file list, then once per file with path, and follow next_offset until it is null. A reply over the size limit is dropped, so use a smaller read_file limit when told to.',
       'Check supplied_inputs and read relevant supplied files before claiming evidence is unavailable. Roslyn tool availability is separate from supplied Roslyn source snapshots.',
       'In the report, identify evidence used and relevant evidence left unread, including failed reads and unread line ranges. Unread evidence is not unavailable evidence.',
       ...(skills.found.length ? ['Skill instructions are supplied inputs. Read each one before reviewing and apply it: ' +

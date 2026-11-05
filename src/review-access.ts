@@ -71,8 +71,71 @@ export class ReviewAccess {
     return { matches: lines.slice(0, limit).map(line => line.slice(0, 300)), total: lines.length, truncated: lines.length > limit };
   }
 
-  async diff(base: string, head: string): Promise<string> {
-    if (![base, head].every(value => /^[a-fA-F0-9]{40,64}$/.test(value))) throw new Error('Full commit SHAs required');
-    return this.git(['diff', '--no-ext-diff', '--no-textconv', base, head, '--']);
+  // Any revision git understands (HEAD~1, a branch) becomes a full SHA here, so the reviewer needs no SHA to hand.
+  private async commit(rev: string): Promise<string> {
+    if (!rev || rev.length > 200 || rev.startsWith('-') || /[\s\0]/.test(rev)) throw new Error('Revision must be a commit SHA, branch, tag or HEAD~n');
+    try {
+      return (await this.git(['rev-parse', '--verify', '--end-of-options', `${rev}^{commit}`])).trim();
+    } catch { throw new Error(`Unknown revision: ${rev}`); }
   }
+
+  // One page per call: every reply stays under the smallest client cap on MCP output, so none spills to a file the reviewer cannot read.
+  // The text of all pages joins, with no separator, into the whole diff. offset counts units: one line, or a piece of a line too long to fit a page.
+  async diff(base: string, head: string, path = '', offset = 0, budget = 40_000): Promise<object> {
+    if (!Number.isInteger(offset) || offset < 0) throw new Error('offset must be nonnegative');
+    if (path.length > 4096 || path.startsWith(':') || path.split(/[\\/]/).includes('..')) throw new Error('path must be a plain repository path');
+    const [from, to] = [await this.commit(base), await this.commit(head)];
+    // --no-renames keeps every numstat path usable as a path argument; --literal-pathspecs keeps path from acting as a glob.
+    const spec = ['--literal-pathspecs', '-c', 'core.quotepath=false', 'diff', '--no-ext-diff', '--no-textconv', '--no-renames'];
+    const range = [from, to, '--', ...(path ? [path] : [])];
+    let text: string;
+    try {
+      text = await this.git([...spec, ...range]);
+    } catch (error) {
+      if ((error as { code?: string }).code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') throw new Error('Diff exceeds 8 MiB; pass path to read one file');
+      throw error;
+    }
+    const units = splitUnits(text, budget / 2);
+    const files = (await this.git([...spec, '--numstat', '-z', ...range])).split('\0').filter(Boolean);
+    // The file list shares page 0 with the text, so it takes its own slice of the reply cap.
+    let listed = 0;
+    for (let used = 0; listed < files.length; listed++) {
+      used += JSON.stringify(files[listed]).length + 1;
+      if (used > 15_000) break;
+    }
+    let end = offset;
+    for (let used = 0; end < units.length; end++) {
+      used += JSON.stringify(units[end]).length;
+      if (used > budget && end > offset) break;
+    }
+    return { base: from, head: to, path: path || null, files_total: files.length,
+      ...(offset === 0 && { files: files.slice(0, listed), files_listed: listed }),
+      total_lines: units.length, offset, next_offset: end < units.length ? end : null, text: units.slice(offset, end).join('') };
+  }
+}
+
+// Lines keep their newline, so joining units restores the text. A unit over the limit (escaped) is cut into pieces that fit.
+export function splitUnits(text: string, limit: number): string[] {
+  const units: string[] = [];
+  for (const line of text.match(/[^\n]*\n|[^\n]+$/g) ?? []) {
+    let rest = line;
+    while (JSON.stringify(rest).length > limit) {
+      let cut = Math.min(rest.length, limit);
+      while (JSON.stringify(rest.slice(0, cut)).length > limit) cut = Math.floor(cut / 2);
+      if (cut > 1 && /[\ud800-\udbff]/.test(rest[cut - 1])) cut--; // never end a piece inside a surrogate pair
+      units.push(rest.slice(0, cut));
+      rest = rest.slice(cut);
+    }
+    units.push(rest);
+  }
+  return units;
+}
+
+// Characters a client will count for a tool result: text parts as sent, every other part and field as JSON.
+export function replySize(result: object): number {
+  const { content, ...others } = result as { content?: unknown };
+  const parts = Array.isArray(content) ? content : [];
+  return parts.reduce((sum: number, part: { type?: unknown; text?: unknown }) =>
+    sum + (part.type === 'text' && typeof part.text === 'string' ? part.text.length : JSON.stringify(part).length), 0)
+    + JSON.stringify(others).length;
 }
