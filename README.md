@@ -186,6 +186,18 @@ type, plain text or `regex: true`). Paths escaping the source root are denied un
 review inputs. It has no arbitrary command, write, publication, or memory tools.
 Any reply over 60,000 characters is dropped with an error, because Claude Code saves
 a larger MCP result to a file the reviewer cannot read.
+
+`git_diff` takes `base` and `head` (any revision git resolves, turned into full SHAs
+by the broker) and returns one page of about 40,000 characters per call:
+`{ base, head, path, files_total, files, files_listed, total_lines, offset, next_offset, text }`.
+The first page lists the changed files (a prefix when there are many) as
+`added<TAB>deleted<TAB>path`, with renames shown as a delete plus an add. Pass `path` to
+read one file (a literal name, not a glob) and `offset` set to the previous
+`next_offset` for the next page. `next_offset` is `null` on the last page. Join the
+`text` of all pages with no separator to get the whole diff. A line too long for one
+page is split across pages. A diff over 8 MiB fails with a message to pass `path`.
+It compares committed revisions only, so uncommitted changes need a supplied diff file.
+
 `review_status` lists all supplied inputs, including snapshots outside the repository
 that do not appear in `list_files`. `read_file` labels current disk reads as
 `working_tree` or `supplied_input`, with a resolved path and no asserted revision.
