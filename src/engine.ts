@@ -48,27 +48,57 @@ function observeCodexBanner(task: Task, stderr: string): void {
   }
 }
 
-// Codex's model table: its models_cache.json lists each model's default_reasoning_level. Re-read only when the file changes.
-// shortcut: a missing or unreadable table leaves the banner value, when Codex moves the table, update the path.
-let codexModelTable: { path: string; mtimeMs: number; defaults: Map<string, string> } | undefined;
+// Codex's model table: its models_cache.json lists each model's default and supported reasoning levels. Re-read only when the file changes.
+// shortcut: a missing or unreadable table leaves the banner value and skips launch validation, when Codex moves the table, update the path.
+interface CodexModel { effort?: string; levels: string[]; listed: boolean }
+let codexModelTable: { path: string; mtimeMs: number; models: Map<string, CodexModel> } | undefined;
 
-function codexDefaultEffort(model: string): string | undefined {
+function codexModels(): Map<string, CodexModel> | undefined {
   try {
     const path = join(process.env.CODEX_HOME || join(homedir(), '.codex'), 'models_cache.json');
     const { mtimeMs } = statSync(path);
     if (codexModelTable?.path !== path || codexModelTable.mtimeMs !== mtimeMs) {
-      const models = JSON.parse(readFileSync(path, 'utf8')).models;
-      const defaults = new Map<string, string>();
-      for (const entry of (Array.isArray(models) ? models : []) as Array<{ slug?: unknown; default_reasoning_level?: unknown }>) {
-        if (typeof entry.slug === 'string' && typeof entry.default_reasoning_level === 'string') {
-          defaults.set(entry.slug, entry.default_reasoning_level);
-        }
+      const raw = JSON.parse(readFileSync(path, 'utf8')).models;
+      const models = new Map<string, CodexModel>();
+      for (const entry of (Array.isArray(raw) ? raw : []) as Array<{ slug?: unknown; default_reasoning_level?: unknown; visibility?: unknown; supported_reasoning_levels?: unknown }>) {
+        if (typeof entry.slug !== 'string') continue;
+        const levels = (Array.isArray(entry.supported_reasoning_levels) ? entry.supported_reasoning_levels : [])
+          .map((l: { effort?: unknown }) => l?.effort).filter((e): e is string => typeof e === 'string');
+        models.set(entry.slug, {
+          effort: typeof entry.default_reasoning_level === 'string' ? entry.default_reasoning_level : undefined,
+          levels,
+          listed: entry.visibility === 'list',
+        });
       }
-      codexModelTable = { path, mtimeMs, defaults };
+      codexModelTable = { path, mtimeMs, models };
     }
-    return codexModelTable.defaults.get(model);
+    return codexModelTable.models;
   } catch {
     return undefined;
+  }
+}
+
+function codexDefaultEffort(model: string): string | undefined {
+  return codexModels()?.get(model)?.effort;
+}
+
+// A guessed slug ("astra", "codex/astra") otherwise reaches Codex, which rejects it with an account-level message.
+// Reject it here with the real slugs and the closest match.
+function checkCodexLaunch(model: string | undefined, effort: string | undefined): void {
+  const table = model === undefined ? undefined : codexModels();
+  if (!table || model === undefined) return;
+  const entry = table.get(model);
+  if (!entry) {
+    const token = (model.split('/').pop() ?? model).toLowerCase();
+    const near = [...table].filter(([slug, m]) => m.listed && slug.includes(token)).map(([slug]) => slug);
+    const valid = [...table].filter(([, m]) => m.listed).map(([slug]) => slug).join(', ');
+    throw new Error(
+      `Unknown Codex model "${model}".${near.length ? ` Did you mean ${near.join(' or ')}?` : ''} Valid: ${valid}. ` +
+      'Pass the bare slug; the list comes from the Codex models_cache.json.',
+    );
+  }
+  if (effort !== undefined && entry.levels.length && !entry.levels.includes(effort)) {
+    throw new Error(`reasoning_effort "${effort}" is not supported by ${model}. Supported: ${entry.levels.join(', ')}.`);
   }
 }
 
@@ -190,6 +220,7 @@ export class EngineManager {
     if (launchEffort !== undefined && engine === 'gemini') {
       throw new Error(`reasoning_effort is not supported for ${engine}.`);
     }
+    if (engine === 'codex') checkCodexLaunch(launchModel, launchEffort);
     if (skipGitRepoCheck && engine !== 'codex') {
       throw new Error(`skip_git_repo_check is not supported for ${engine}.`);
     }

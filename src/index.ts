@@ -75,6 +75,9 @@ server.tool(
       .optional()
       .describe(
         'Optional model override for Codex, Gemini, Claude Code, or OpenCode (provider/model). ' +
+        'Claude takes an alias or full id as listed by `claude --help`; never invent one. ' +
+        'Codex takes the bare slug from its models_cache.json (for example gpt-6-astra), never a nickname or codex/... prefix; ' +
+        'an unknown slug is rejected with the valid list. ' +
         'Omit to use the CLI default. For Gemini, do not set this unless the user explicitly requests a model.',
       ),
     reasoning_effort: z
@@ -82,7 +85,7 @@ server.tool(
       .optional()
       .describe(
         'Optional reasoning effort for Codex or Claude Code (for example max), or model variant for OpenCode. ' +
-        'Must be supported by the selected model/provider. Omit to use the CLI default. ' +
+        'Must be supported by the selected model/provider (Codex checks it against the model\'s supported levels). Omit to use the CLI default. ' +
         'Not supported for Gemini.',
       ),
     skip_git_repo_check: z

@@ -295,3 +295,29 @@ test('codex banner "none" with no effort requested becomes the model table defau
     await rm(cwd, { recursive: true, force: true });
   }
 });
+
+test('codex launch rejects an unknown model and an unsupported effort', async () => {
+  const home = await mkdtemp(join(process.cwd(), '.syndic-codex-home-'));
+  const saved = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = home;
+  await writeFile(join(home, 'models_cache.json'), JSON.stringify({ models: [
+    { slug: 'gpt-6-astra', visibility: 'list', default_reasoning_level: 'medium',
+      supported_reasoning_levels: [{ effort: 'low' }, { effort: 'xhigh' }] },
+    { slug: 'gpt-hidden', visibility: 'hide', supported_reasoning_levels: [] },
+  ] }));
+  const launch = async () => { throw new Error('launched'); };
+  const { EngineManager } = await import('../dist/engine.js');
+  const manager = new EngineManager(launch);
+  try {
+    const run = (model, effort) => manager.run('codex', 'Inspect the task', home, undefined, false, false, model, effort);
+    await assert.rejects(run('astra', 'xhigh'), /Unknown Codex model "astra"\. Did you mean gpt-6-astra\? Valid: gpt-6-astra\./);
+    await assert.rejects(run('codex/astra', 'xhigh'), /Did you mean gpt-6-astra\?/);
+    await assert.rejects(run('gpt-6-astra', 'max'), /"max" is not supported by gpt-6-astra\. Supported: low, xhigh/);
+    // A valid pair passes validation and reaches the launcher.
+    await assert.rejects(run('gpt-6-astra', 'xhigh'), /launched/);
+    await assert.rejects(run('gpt-hidden', undefined), /launched/);
+  } finally {
+    if (saved === undefined) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = saved;
+    await rm(home, { recursive: true, force: true });
+  }
+});
