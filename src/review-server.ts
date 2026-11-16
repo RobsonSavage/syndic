@@ -15,7 +15,8 @@ import { SEMANTIC_TOOLS } from './types.js';
 // So the broker connects first and selects the solution in the background.
 // Readiness is awaited inside the first tool call instead of the handshake,
 // which is what this bound has to fit: a reviewer's per-tool timeout.
-const ROSLYN_STARTUP_MS = 110_000;
+// It is also the timeout of every Roslyn request, which the SDK otherwise ends at 60s.
+const ROSLYN_TIMEOUT_MS = 300_000;
 
 const cfg = JSON.parse(await readFile(process.argv[2], 'utf8'));
 if (cfg.audit_path !== undefined && (typeof cfg.audit_path !== 'string' || !isAbsolute(cfg.audit_path) ||
@@ -58,7 +59,7 @@ function solutionPath(result: unknown): string | undefined {
 }
 
 async function validateWorkspace(client: Client): Promise<void> {
-  const result = await client.callTool({ name: 'get_workspace_status', arguments: {} });
+  const result = await client.callTool({ name: 'get_workspace_status', arguments: {} }, undefined, { timeout: ROSLYN_TIMEOUT_MS });
   const path = solutionPath(result);
   if (result.isError || !path || !inside(root, await realpath(path))) {
     throw new Error('Roslyn solution mismatch or unavailable');
@@ -78,8 +79,9 @@ async function attachRoslyn(): Promise<void> {
       stderr: 'pipe' });
     transport.stderr?.on('data', () => { /* upstream diagnostics never become reviewer memory/context */ });
     const startup = (async () => {
-      await client.connect(transport);
-      const selection = await client.callTool({ name: 'set_solution_root', arguments: { rootPath: root, warmUp: false } });
+      await client.connect(transport, { timeout: ROSLYN_TIMEOUT_MS });
+      const selection = await client.callTool({ name: 'set_solution_root', arguments: { rootPath: root, warmUp: false } },
+        undefined, { timeout: ROSLYN_TIMEOUT_MS });
       if (selection.isError) throw new Error(`Roslyn selection failed: ${JSON.stringify(selection.content)}`);
       await validateWorkspace(client);
       return (await client.listTools()).tools.filter(tool => SEMANTIC_TOOLS.has(tool.name));
@@ -92,7 +94,7 @@ async function attachRoslyn(): Promise<void> {
     // abandoned attempt cannot advertise a client that is no longer connected.
     semantic = await Promise.race([startup, new Promise<never>((_, reject) => {
       expiry = setTimeout(() => reject(new Error(
-        `Roslyn did not finish selecting the solution within ${ROSLYN_STARTUP_MS / 1000}s`)), ROSLYN_STARTUP_MS);
+        `Roslyn did not finish selecting the solution within ${ROSLYN_TIMEOUT_MS / 1000}s`)), ROSLYN_TIMEOUT_MS);
     })]);
     roslyn = client;
     roslynError = '';
@@ -270,7 +272,7 @@ async function callTool(request: CallToolRequest) {
           }
         }
         await validateWorkspace(roslyn);
-        return await roslyn.callTool(request.params);
+        return await roslyn.callTool(request.params, undefined, { timeout: ROSLYN_TIMEOUT_MS });
       }
     }
   } catch (error) {
